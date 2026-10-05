@@ -1,0 +1,8 @@
+# Never commit ticket exports or generated reports (they contain personal data)
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.docx
+node_modules/
+.DS_Store
