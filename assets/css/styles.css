@@ -334,3 +334,20 @@ table.data-table tbody tr:hover td { background: var(--accent-soft); }
   .field.inline select { min-width: 0; width: 100%; }
   table.rep td:first-child, table.rep th:first-child { min-width: 180px; }
 }
+
+/* Period banner & checks */
+.period-banner { margin-top: 18px; padding: 12px 16px; border-radius: 10px; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; }
+.period-banner:empty { display: none; }
+.period-banner .pb-main { font-size: 16px; font-weight: 700; }
+.period-banner .pb-sub { color: var(--muted); font-size: 13px; }
+.period-banner .pb-warn { color: var(--warn-text); font-size: 13px; font-weight: 600; }
+.checks { margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.checks-head { width: 100%; text-align: left; font: inherit; font-weight: 600; padding: 10px 14px; border: none; cursor: pointer; display: flex; align-items: center; gap: 8px; background: color-mix(in srgb, var(--ok) 10%, var(--surface)); color: var(--ok); }
+.checks.fail .checks-head { background: var(--err-bg); color: var(--err-text); }
+.checks ul { list-style: none; margin: 0; padding: 8px 14px 12px; font-size: 13px; }
+.checks li { display: flex; gap: 8px; padding: 3px 0; }
+.checks li .ic { flex: none; width: 18px; font-weight: 700; }
+.checks li.ok .ic { color: var(--ok); }
+.checks li.bad .ic { color: var(--err-text); }
+.checks li .det { color: var(--err-text); }
+table.rep tr.unidentified td { font-style: italic; color: var(--muted); }

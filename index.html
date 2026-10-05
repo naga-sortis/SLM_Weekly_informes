@@ -65,22 +65,21 @@
       <div class="card-head">
         <span class="step">2</span>
         <div>
-          <h2>Report period &amp; details</h2>
-          <p class="muted">Choosing a month selects its ISO weeks (weeks whose Monday falls in that month). You can adjust the week range manually.</p>
+          <h2>Report week &amp; details</h2>
+          <p class="muted">Choose the week to report (default: the latest week in the file). The week number, dates and month are taken from that week everywhere — on this page and in the Word report.</p>
         </div>
       </div>
       <div class="grid settings-grid">
-        <div class="field">
-          <label for="monthSelect">Report month</label>
-          <select id="monthSelect"></select>
+        <div class="field span-2">
+          <label for="reportWeek">Report week</label>
+          <select id="reportWeek"></select>
         </div>
         <div class="field">
-          <label for="weekFrom">From week</label>
-          <select id="weekFrom"></select>
-        </div>
-        <div class="field">
-          <label for="weekTo">To week</label>
-          <select id="weekTo"></select>
+          <label for="weeksShown">Weeks shown in tables</label>
+          <select id="weeksShown">
+            <option value="1">1 (only the report week)</option><option value="2">2</option><option value="3">3</option><option value="4">4</option>
+            <option value="5" selected>5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
+          </select>
         </div>
         <div class="field">
           <label for="monthsBack">Months in trend charts</label>
@@ -89,9 +88,18 @@
           </select>
         </div>
         <div class="field span-2">
-          <label for="slmGroups">SLM group IDs <span class="muted">(for “Abiertas por el SLM”)</span></label>
+          <label for="slmGroups">SLM group IDs <span class="muted">(only used for the row “Abiertas por el SLM”)</span></label>
           <input id="slmGroups" type="text" value="XSP00025, XSP00027" autocomplete="off" spellcheck="false">
         </div>
+        <div class="field span-2 checkbox">
+          <label><input id="inferGestor" type="checkbox"> Also take the gestor from the description when “Current action” has none <span class="muted">(optional — flagged in the report)</span></label>
+        </div>
+      </div>
+
+      <div id="periodBanner" class="period-banner" role="status" aria-live="polite"></div>
+      <div id="checksBox" class="checks" hidden>
+        <button id="checksToggle" type="button" class="checks-head" aria-expanded="false"></button>
+        <ul id="checksList" hidden></ul>
       </div>
 
       <details class="more">
@@ -183,14 +191,17 @@
             <li><b>Devuelta</b> = <i>Current action</i> is “DEVUELTO”.</li>
             <li><b>Resuelta</b> = status is not <i>Current</i> and the <i>Restoration date</i> is before the end of the week (so past weeks show the situation at the time).</li>
             <li><b>Backlog</b> = cases created before the week, not returned and still unresolved when the week starts.</li>
-            <li><b>Abiertas por el SLM</b> = <i>Initiator - Group ID</i> is one of the SLM group IDs set above.</li>
-            <li><b>Gestor</b> = first part of <i>Current action</i> (“GESTOR - PROBLEMA - TÉCNICO”). Technician statuses (“JR - Trabajando”) have no gestor.</li>
+            <li>All tickets count, whoever opened them (the SLM groups XSP00025 / XSP00027 are treated like any other initiator). <b>Abiertas por el SLM</b> only shows how many of the new cases were opened by those groups.</li>
+            <li><b>Gestor</b> = first part of <i>Current action</i> (“GESTOR - PROBLEMA - TÉCNICO”); spelling variants (NFM-T / NFMT, ENM 3 / ENM3…) are merged. Every new incidencia is counted once, so the totals of 2.2 always equal “Nuevos durante la semana”.</li>
+            <li>Nothing created or resolved after the end of the report week is counted, so a past week can be regenerated at any time with the same figures.</li>
+            <li>Weeks are ISO weeks (Monday–Sunday) calculated from the <i>Creation date</i>.</li>
           </ul>
         </details>
       </div>
 
       <div class="tab-panel card" data-panel="gestor" hidden>
-        <h3>2.2 Nº casos por gestor <span class="muted small">(new incidencias per week)</span></h3>
+        <h3>2.2 Nº casos por gestor <span class="muted small">(every new incidencia of the week, by the gestor in “Current action”)</span></h3>
+        <p class="muted small" id="gestorNote"></p>
         <div class="table-wrap" id="tblGestor"></div>
       </div>
 

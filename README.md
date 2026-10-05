@@ -9,9 +9,10 @@ Everything runs **in the browser**: the Excel file is never uploaded anywhere. A
 
 1. Open the page and drop the ticket export (`.xlsx`, `.xls` or `.csv`).
    The sheet with the `Ticket ID` header row is found automatically. If there are several, the largest one is used, and you can switch sheets.
-2. Pick the **report month**. This selects its ISO weeks (the weeks whose Monday falls in that month, e.g. April 2024 → weeks 14–18). You can also set the week range by hand (up to 8 weeks).
-3. Optionally fill in the cover, revision table and the “Incidencias destacadas / Otros trabajos” bullet points.
-4. **Download Word report** or **Download extracted data (Excel)**.
+2. Pick the **report week**. By default it's the latest week in the file. The week number, its dates (Monday–Sunday) and its month are used everywhere, on the page and in Word. A week that spans two months is labelled e.g. “Septiembre / Octubre 2026”. The tables also show the previous weeks (5 by default, 1–8).
+3. Check the **consistency checks** panel. If any check fails, the Word export is blocked.
+4. Optionally fill in the cover, revision table and the “Incidencias destacadas / Otros trabajos” bullet points.
+5. **Download Word report** or **Download extracted data (Excel)**.
 
 ## Extracted fields
 
@@ -33,9 +34,23 @@ Everything runs **in the browser**: the Excel file is never uploaded anywhere. A
 * **Devuelta**: `Current action` is `DEVUELTO`.
 * **Resuelta**: the status is not `Current` and the `Restoration date` falls before the end of the week. Past weeks therefore show the situation as it was then.
 * **Backlog**: cases created before the week that were not returned and were still unresolved when the week started.
-* **Abiertas por el SLM**: `Initiator - Group ID` is one of the SLM groups (default `XSP00025, XSP00027`, which you can change on the page).
-* **Casos por gestor**: new incidencias per week, grouped by the first part of `Current action`. Technician statuses such as `JR - Trabajando` or `GV - ACCESO …` have no gestor.
-* Weeks are ISO weeks calculated from the creation date.
+* **All tickets count, whoever opened them.** The SLM groups (XSP00025 / XSP00027) are treated like any other initiator. The row **Abiertas por el SLM** only shows how many of the new cases those groups opened.
+* **Casos por gestor**: every new incidencia of each week is counted once, under the gestor from the first part of `Current action` (`GESTOR - PROBLEMA - TÉCNICO`). Spelling variants are merged (NFM-T / NFMT / NFM -T, ENM 3 / ENM3…). Incidencias with no gestor in the action (`JR - Trabajando`, empty, `DEVUELTO`) appear as *Sin gestor identificado*, so the weekly totals always equal “Nuevos durante la semana”. There is an optional switch, off by default, that takes the gestor from the description instead; the report states when it's used.
+* **Cut-off**: nothing created or resolved after the end of the report week is counted, including in the monthly charts. A past week therefore always gives the same figures.
+* Week, month and year are recalculated from the creation date (ISO weeks), and the file's own columns are cross-checked against them.
+
+## Consistency checks
+
+Every report is verified before it can be exported:
+
+* Nuevos = Resueltas + Sin resolver (no esc.) + Sin resolver (esc.) + Devueltas, for every week and both types.
+* Backlog = Resueltos + Sin resolver, and each week's backlog = the previous week's pending (backlog + new).
+* “Nuevos” equals the tickets actually created in each week.
+* 2.2 totals per week = “Nuevos durante la semana” (Incidencias), and each gestor appears only once.
+* 2.3 TOTAL = the number of cases listed in 2.4, and every listed case was really pending at the cut-off.
+* The monthly charts cover every case of the month exactly once, and the report month contains the report week.
+
+Unit tests (synthetic data only) run with `node --test tests/core.test.js`. They also run in the GitHub Actions workflow before every deployment.
 
 ## Hosting on GitHub Pages
 

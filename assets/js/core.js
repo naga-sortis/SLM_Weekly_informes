@@ -113,6 +113,7 @@
 
   function validYMD(y, mo, d, h, mi, s) {
     return y >= 1900 && y <= 2200 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31 &&
+      new Date(Date.UTC(y, mo - 1, d)).getUTCDate() === d && // rejects 31/02 etc.
       h >= 0 && h <= 23 && mi >= 0 && mi <= 59 && s >= 0 && s <= 59;
   }
 
@@ -348,7 +349,9 @@
     const up = stripAccents(raw).toUpperCase();
     if (/^DEVUELT[OA]S?\b/.test(up)) { res.kind = 'devuelto'; return res; }
     if (/^CERRAD[OA]S?$/.test(up)) { res.kind = 'cerrado'; return res; }
-    const parts = raw.split(/\s+-+\s*|\s*-+\s+/).map((p) => p.trim()).filter(Boolean);
+    // "NFM -T" / "NFM- T" are one name: glue a hyphen followed/preceded by a 1–2 char fragment.
+    const glued = raw.replace(/([A-Za-z0-9])\s+-([A-Za-z0-9]{1,2})(?=\s|$)/g, '$1-$2');
+    const parts = glued.split(/\s+-+\s*|\s*-+\s+/).map((p) => p.trim()).filter(Boolean);
     // Technician work status, e.g. "JR - Trabajando - Esperando autorizacion" or "GV - ACCESO MENESES"
     // (starts with the technician's initials instead of a gestor). "EC-1" style names are kept as gestor.
     if (/TRABAJANDO/.test(up) || /^[A-Z]{2}(\s*-+\s*(?!\d)|$)/.test(up)) {
@@ -442,7 +445,17 @@
       }
       if (t.tecnico && t.actionKind === 'gestor') t.tecnico = titleCase(t.tecnico);
     }
+    canonicalizeGestores(tickets);
+    inferGestoresFromDescription(tickets);
     tickets.sort((a, b) => b.created - a.created || (a.id < b.id ? -1 : 1));
+
+    // Data-quality checks on the file itself (reported, never silently "fixed").
+    const weekMismatch = tickets.filter((t) => t.fileWeek !== null && t.fileWeek !== isoWeekInfo(t.created).week).length;
+    const monthMismatch = tickets.filter((t) => t.fileMonth !== null && t.fileMonth !== new Date(t.created).getUTCMonth() + 1).length;
+    const restoredBefore = tickets.filter((t) => t.restored !== null && t.restored < t.created).length;
+    if (weekMismatch) warnings.push(`${weekMismatch} ticket(s) have a "Creation week" that does not match their Creation date; the week is recalculated from the date.`);
+    if (monthMismatch) warnings.push(`${monthMismatch} ticket(s) have a "Creation month" that does not match their Creation date; the month is recalculated from the date.`);
+    if (restoredBefore) warnings.push(`${restoredBefore} ticket(s) have a Restoration date earlier than the Creation date; they are treated as resolved at creation.`);
 
     if (duplicates) warnings.push(`${duplicates} duplicated Ticket ID row(s) were ignored (first occurrence kept).`);
     if (invalidDates) warnings.push(`${invalidDates} row(s) without a valid Creation date were ignored.`);
@@ -451,6 +464,70 @@
     const miss = optionalImportant.filter((l) => missingOptional.has(l));
     if (miss.length) warnings.push(`Column(s) not found, values left empty: ${miss.join(', ')}.`);
     return { tickets, warnings, duplicates, invalidDates };
+  }
+
+  /** Key used to merge spelling variants of a gestor: "NFM-T", "NFM -T", "NFMT" → "NFMT". */
+  function gestorKey(g) {
+    return stripAccents(str(g)).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  }
+
+  /** Give every spelling variant of a gestor the same (most frequent) name so repeats are counted together. */
+  function canonicalizeGestores(tickets) {
+    const variants = new Map();
+    for (const t of tickets) {
+      if (!t.gestor) continue;
+      const k = gestorKey(t.gestor);
+      if (!k) { t.gestor = ''; continue; }
+      if (!variants.has(k)) variants.set(k, new Map());
+      const m = variants.get(k);
+      m.set(t.gestor, (m.get(t.gestor) || 0) + 1);
+    }
+    const display = new Map();
+    for (const [k, m] of variants) {
+      const best = Array.from(m.entries()).sort((a, b) => b[1] - a[1] || a[0].length - b[0].length || a[0].localeCompare(b[0]))[0][0];
+      display.set(k, best);
+    }
+    for (const t of tickets) {
+      if (!t.gestor) continue;
+      t.gestorRaw = t.gestor;
+      t.gestor = display.get(gestorKey(t.gestor));
+    }
+  }
+
+  // First words that make a "gestor" in Current action a generic task rather than a system name.
+  const GENERIC_GESTOR = /^(ACCESO|APERTURA|REVISION|SOLICITUD|CONECTIVIDAD|ESCUDO|BAJA|BLOQUEO|USER|USUARIO|ABIERTO|SOLUCIONADO|GESTOR|MANOS|CAIDA|CELDA|AUTORIZADO|ESTADISTIC|ENTIDAD|PDT|CC|OSP|REE|PENDIENTE|ERICSS|HUAWEI|NOKIA|ZTE|CISCO|SALTO|BALAS|LINAREJOS|SANITAS|MIRADOR|SHARING|CINTAS)/;
+
+  function escapeRe(c) { return c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+  /**
+   * When Current action has no gestor (e.g. "IG - Trabajando"), look for a known gestor name
+   * in the description. Only names that already appear as gestor in this file are used, and
+   * the gestor is assigned only when exactly one (most specific) name matches. Never overrides
+   * the gestor written in Current action.
+   */
+  function buildGestorMatcher(tickets) {
+    const freq = new Map();
+    for (const t of tickets) if (t.gestor) freq.set(t.gestor, (freq.get(t.gestor) || 0) + 1);
+    const vocab = [];
+    for (const [name, n] of freq) {
+      const key = gestorKey(name);
+      if (n < 2 || key.length < 3 || GENERIC_GESTOR.test(key)) continue;
+      // chars may be separated by spaces / hyphens / dots ("SAM5620" ~ "SAM 5620"); whole-word match
+      const body = key.split('').map(escapeRe).join('[\\s\\-_.]*');
+      vocab.push({ name, key, re: new RegExp(`(^|[^A-Z0-9])${body}(?![A-Z0-9])`) });
+    }
+    return (description) => {
+      if (!description) return '';
+      const text = stripAccents(description).toUpperCase();
+      let hits = vocab.filter((v) => v.re.test(text));
+      hits = hits.filter((h) => !hits.some((o) => o !== h && o.key.length > h.key.length && o.key.includes(h.key)));
+      return hits.length === 1 ? hits[0].name : '';
+    };
+  }
+
+  function inferGestoresFromDescription(tickets) {
+    const match = buildGestorMatcher(tickets);
+    for (const t of tickets) t.gestorDesc = t.gestor || t.devuelto ? '' : match(t.description);
   }
 
   function buildTicket(id, created, row, get, date1904) {
@@ -471,10 +548,14 @@
       vendor,
       escalated: VENDORS.includes(vendor),
       created,
-      // values as given in the file (fallback: computed from the creation date)
-      week: toInt(get(row, 'creationWeek')) ?? iso.week,
-      month: toInt(get(row, 'creationMonth')) ?? cd.getUTCMonth() + 1,
-      year: toInt(get(row, 'creationYear')) ?? cd.getUTCFullYear(),
+      // Week / month / year always derived from the Creation date (ISO week, ISO week-year),
+      // so they are correct even when the file's own columns are stale or inconsistent.
+      week: iso.week,
+      weekYear: iso.year,
+      month: cd.getUTCMonth() + 1,
+      year: cd.getUTCFullYear(),
+      fileWeek: toInt(get(row, 'creationWeek')),
+      fileMonth: toInt(get(row, 'creationMonth')),
       // values used for grouping in the report (always computed → consistent ISO weeks)
       weekKey: iso.key,
       monthKey: monthKeyOf(created),
@@ -551,36 +632,70 @@
     });
   }
 
+  /** "Septiembre 2026" or, for a week spanning two months, "Septiembre / Octubre 2026". */
+  function periodMonthsLabel(startMs, endMsExclusive) {
+    const a = monthKeyOf(startMs);
+    const b = monthKeyOf(endMsExclusive - 1);
+    if (a === b) return monthLabel(a);
+    const ya = Math.floor(a / 100), yb = Math.floor(b / 100);
+    const ma = MONTHS_ES[(a % 100) - 1], mb = MONTHS_ES[(b % 100) - 1];
+    return ya === yb ? `${ma} / ${mb} ${ya}` : `${ma} ${ya} / ${mb} ${yb}`;
+  }
+
+  /**
+   * Build the whole report for a window of weeks; the LAST week is the report week.
+   * Nothing created or resolved after the end of the report week is counted anywhere.
+   */
   function computeReport(tickets, options) {
     const weeks = options.weeks;
     const slmGroups = new Set((options.slmGroups || []).map((g) => g.trim().toUpperCase()).filter(Boolean));
     const monthsBack = Math.max(1, Math.min(24, options.monthsBack || 7));
     const lastWeek = weeks[weeks.length - 1];
     const cutoff = lastWeek.end;
-    const reportMonth = options.monthKey || monthKeyOf(lastWeek.start);
+    let dataUntil = options.dataUntil ?? null;
+    if (dataUntil === null) {
+      for (const t of tickets) {
+        if (dataUntil === null || t.created > dataUntil) dataUntil = t.created;
+        if (t.restored !== null && t.restored > dataUntil) dataUntil = t.restored;
+      }
+    }
+    // Last moment actually covered by both the week and the data.
+    const asOf = dataUntil === null ? cutoff - 1000 : Math.min(cutoff - 1000, dataUntil);
+    const reportMonth = monthKeyOf(Math.max(lastWeek.start, asOf));
+    const periodLabel = periodMonthsLabel(lastWeek.start, lastWeek.end);
+    const scope = tickets.filter((t) => t.created < cutoff);
 
-    const inc = weeklyForCategory(tickets, weeks, 'INC', slmGroups);
-    const ot = weeklyForCategory(tickets, weeks, 'OT', slmGroups);
+    const inc = weeklyForCategory(scope, weeks, 'INC', slmGroups);
+    const ot = weeklyForCategory(scope, weeks, 'OT', slmGroups);
 
-    // 2.2 Casos por gestor (new incidencias of each week with a gestor in Current action)
+    // 2.2 Casos por gestor: EVERY new incidencia of each week, under the gestor taken from
+    // "Current action" (GESTOR - PROBLEMA - TECNICO). Repeated gestor → +1 on the same row.
+    // Incidencias without a gestor in the action go to "Sin gestor identificado" so the
+    // column totals always equal "Nuevos durante la semana" (Incidencias) of table 2.1.
+    const NO_GESTOR = 'Sin gestor identificado';
+    const inferGestor = !!options.inferGestor;
+    const gOf = (t) => t.gestor || (inferGestor ? t.gestorDesc : '') || '';
+    let inferredCount = 0;
     const gestorMap = new Map();
     weeks.forEach((w, i) => {
-      for (const t of tickets) {
-        if (t.category !== 'INC' || !t.gestor || t.created < w.start || t.created >= w.end) continue;
-        if (!gestorMap.has(t.gestor)) gestorMap.set(t.gestor, new Array(weeks.length).fill(0));
-        gestorMap.get(t.gestor)[i]++;
+      for (const t of scope) {
+        if (t.category !== 'INC' || t.created < w.start || t.created >= w.end) continue;
+        if (!t.gestor && gOf(t)) inferredCount++;
+        const g = gOf(t) || NO_GESTOR;
+        if (!gestorMap.has(g)) gestorMap.set(g, new Array(weeks.length).fill(0));
+        gestorMap.get(g)[i]++;
       }
     });
     const gestores = Array.from(gestorMap.entries())
-      .map(([gestor, counts]) => ({ gestor, counts, total: counts.reduce((a, b) => a + b, 0) }))
-      .sort((a, b) => a.gestor.localeCompare(b.gestor, 'es'));
+      .map(([gestor, counts]) => ({ gestor, counts, total: counts.reduce((a, b) => a + b, 0), unidentified: gestor === NO_GESTOR }))
+      .sort((a, b) => (a.unidentified - b.unidentified) || a.gestor.localeCompare(b.gestor, 'es'));
 
-    // 2.4 Detalle de los casos sin resolver (as of the end of the last week)
-    const pending = tickets
-      .filter((t) => t.created < cutoff && !t.devuelto && !resolvedBefore(t, cutoff))
+    // 2.4 Detalle de los casos sin resolver (as of the end of the report week)
+    const pending = scope
+      .filter((t) => !t.devuelto && !resolvedBefore(t, cutoff))
       .sort((a, b) => b.created - a.created);
 
-    // 3.x Monthly trends
+    // 3.x Monthly trends (up to the end of the report week)
     const months = monthsEndingAt(reportMonth, monthsBack);
     const monthSet = new Set(months);
     const prioSeries = (list, monthOf) => {
@@ -597,34 +712,44 @@
       return prune(keys, data);
     };
 
-    const opened = prioSeries(tickets, (t) => t.monthKey);
-    const resolved = prioSeries(tickets.filter((t) => !t.devuelto && t.resolvedAt !== null && t.resolvedAt < cutoff),
+    const opened = prioSeries(scope, (t) => t.monthKey);
+    const resolved = prioSeries(scope.filter((t) => !t.devuelto && resolvedBefore(t, cutoff)),
       (t) => monthKeyOf(t.resolvedAt));
-    const escalatedList = tickets.filter((t) => t.escalated);
+    const escalatedList = scope.filter((t) => t.escalated);
     const escalated = prioSeries(escalatedList, (t) => t.monthKey);
 
-    const escByGestor = groupSeries(escalatedList, months, (t) => t.gestor || 'SIN GESTOR', 12);
+    const escByGestor = groupSeries(escalatedList, months, (t) => gOf(t) || NO_GESTOR, 12);
     const escByVendor = groupSeries(escalatedList, months, (t) => t.vendor, 12, VENDORS);
 
+    // Status as it was at the end of the report week.
     const statusKeys = ['Inc. Current', 'Inc. Resolved', 'Inc. Restored', 'Inc. Closed', 'Inc. Devuelto',
       'OTs Current', 'OTs Cerradas', 'OTs Devueltas'];
     const statusData = Object.fromEntries(statusKeys.map((k) => [k, months.map(() => 0)]));
-    for (const t of tickets) {
+    for (const t of scope) {
       if (!monthSet.has(t.monthKey)) continue;
       const idx = months.indexOf(t.monthKey);
+      const bucket = t.devuelto ? 'Devuelto' : (resolvedBefore(t, cutoff) ? t.statusBucket : 'Current');
       let k;
-      if (t.category === 'INC') k = `Inc. ${t.statusBucket}`;
-      else k = t.devuelto ? 'OTs Devueltas' : (t.statusBucket === 'Current' ? 'OTs Current' : 'OTs Cerradas');
+      if (t.category === 'INC') k = `Inc. ${bucket}`;
+      else k = bucket === 'Devuelto' ? 'OTs Devueltas' : (bucket === 'Current' ? 'OTs Current' : 'OTs Cerradas');
       statusData[k][idx]++;
     }
 
-    return {
+    const report = {
       weeks,
+      reportWeek: lastWeek,
       cutoff,
+      asOf,
+      dataUntil,
+      partialWeek: dataUntil !== null && dataUntil < cutoff - 1000,
+      periodLabel,
       reportMonth,
+      partialMonth: monthKeyOf(asOf) === reportMonth && monthKeyOf(asOf + DAY) === reportMonth,
       inc,
       ot,
       gestores,
+      gestorInferred: inferGestor ? inferredCount : 0,
+      gestorUnidentified: (gestores.find((g) => g.unidentified) || { total: 0 }).total,
       pending,
       months,
       monthly: {
@@ -636,6 +761,82 @@
         status: prune(statusKeys, statusData),
       },
     };
+    report.checks = validateReport(report, scope);
+    return report;
+  }
+
+  /**
+   * Consistency checks run on every report. Any failure is shown in the UI and blocks the
+   * Word export, so a report with inconsistent figures can never be sent to the customer.
+   */
+  function validateReport(r, scope) {
+    const checks = [];
+    const add = (ok, label, detail) => checks.push({ ok: !!ok, label, detail: ok ? '' : detail });
+    const n = r.weeks.length;
+
+    // Weeks are consecutive ISO weeks, 7 days each
+    let consecutive = true;
+    for (let i = 0; i < n; i++) {
+      const w = r.weeks[i];
+      if (w.end - w.start !== WEEK || isoWeekInfo(w.start).key !== w.key || (i && w.start !== r.weeks[i - 1].end)) consecutive = false;
+    }
+    add(consecutive, 'Weeks are consecutive ISO weeks (Monday–Sunday)', 'The selected weeks are not consecutive.');
+
+    const sum = (arr) => arr.reduce((a, b) => a + b, 0);
+    for (const [cat, rows, name] of [['INC', r.inc, 'Incidencias'], ['OT', r.ot, 'OTs']]) {
+      const list = scope.filter((t) => t.category === cat);
+      const bad = [];
+      const badBl = [];
+      const badCarry = [];
+      const badCount = [];
+      rows.forEach((x, i) => {
+        const w = r.weeks[i];
+        if (x.nuevos !== x.resueltas + x.sinResolverNoEsc + x.sinResolverEsc + x.devueltas) bad.push(w.week);
+        if (x.backlogNoEsc.inicio !== x.backlogNoEsc.resueltos + x.backlogNoEsc.sinResolver ||
+            x.backlogEsc.inicio !== x.backlogEsc.resueltos + x.backlogEsc.sinResolver) badBl.push(w.week);
+        if (i > 0) {
+          const p = rows[i - 1];
+          if (x.backlogNoEsc.inicio !== p.backlogNoEsc.sinResolver + p.sinResolverNoEsc ||
+              x.backlogEsc.inicio !== p.backlogEsc.sinResolver + p.sinResolverEsc) badCarry.push(w.week);
+        }
+        const direct = list.filter((t) => t.created >= w.start && t.created < w.end).length;
+        if (direct !== x.nuevos) badCount.push(w.week);
+      });
+      add(!badCount.length, `${name}: "Nuevos" equals the tickets created in each week`, `Mismatch in week(s) ${badCount.join(', ')}.`);
+      add(!bad.length, `${name}: Nuevos = Resueltas + Sin resolver (no esc.) + Sin resolver (esc.) + Devueltas`, `Does not add up in week(s) ${bad.join(', ')}.`);
+      add(!badBl.length, `${name}: Backlog = Resueltos + Sin resolver`, `Does not add up in week(s) ${badBl.join(', ')}.`);
+      if (n > 1) add(!badCarry.length, `${name}: each week's backlog = previous backlog pending + previous week's new pending`, `Carry-over breaks in week(s) ${badCarry.join(', ')}.`);
+      const last = rows[n - 1];
+      const totalPending = last.sinResolverNoEsc + last.sinResolverEsc + last.backlogNoEsc.sinResolver + last.backlogEsc.sinResolver;
+      const listed = r.pending.filter((t) => t.category === cat).length;
+      add(totalPending === listed, `${name}: 2.3 TOTAL of the report week = cases listed in 2.4`, `2.3 TOTAL is ${totalPending} but 2.4 lists ${listed}.`);
+    }
+
+    // 2.2 vs 2.1
+    const badG = [];
+    r.weeks.forEach((w, i) => {
+      const g = sum(r.gestores.map((x) => x.counts[i]));
+      if (g !== r.inc[i].nuevos) badG.push(`sem. ${w.week} (${g} vs ${r.inc[i].nuevos})`);
+    });
+    add(!badG.length, '2.2 Casos por gestor: weekly totals = "Nuevos durante la semana" (Incidencias) in 2.1', `Mismatch: ${badG.join(', ')}.`);
+    const dupNames = new Set();
+    const keys = new Set();
+    for (const g of r.gestores) { const k = gestorKey(g.gestor); if (keys.has(k)) dupNames.add(g.gestor); keys.add(k); }
+    add(!dupNames.size, '2.2: each gestor appears only once (spelling variants merged)', `Repeated: ${Array.from(dupNames).join(', ')}.`);
+
+    // Nothing after the cut-off, pending list really unresolved
+    add(r.pending.every((t) => t.created < r.cutoff && !t.devuelto && !resolvedBefore(t, r.cutoff)),
+      '2.4: every listed case was created before the end of the week and still unresolved then', 'Some listed cases are not pending at the cut-off.');
+    const openedLast = sum(r.monthly.opened.map((s) => s.data[s.data.length - 1]));
+    const directOpened = scope.filter((t) => t.monthKey === r.reportMonth).length;
+    add(openedLast === directOpened, `3.1: cases opened in ${monthLabel(r.reportMonth)} = tickets created that month up to the cut-off`, `Chart shows ${openedLast}, data has ${directOpened}.`);
+    const statusLast = sum(r.monthly.status.map((s) => s.data[s.data.length - 1]));
+    add(statusLast === directOpened, '3.4: status chart covers every case of the month exactly once', `Chart shows ${statusLast}, data has ${directOpened}.`);
+
+    // Dates
+    add(monthKeyOf(r.reportWeek.start) === r.reportMonth || monthKeyOf(r.reportWeek.end - 1) === r.reportMonth,
+      `Report month (${monthLabel(r.reportMonth)}) contains the report week ${r.reportWeek.week}`, 'Month and week do not match.');
+    return checks;
   }
 
   function prune(keys, data) {
@@ -668,7 +869,13 @@
   /** Overall dataset facts for the UI. */
   function summarize(tickets) {
     let min = Infinity, max = -Infinity;
-    for (const t of tickets) { if (t.created < min) min = t.created; if (t.created > max) max = t.created; }
+    let until = -Infinity;
+    for (const t of tickets) {
+      if (t.created < min) min = t.created;
+      if (t.created > max) max = t.created;
+      if (t.created > until) until = t.created;
+      if (t.restored !== null && t.restored > until) until = t.restored;
+    }
     const weekKeys = Array.from(new Set(tickets.map((t) => t.weekKey))).sort((a, b) => a - b);
     const monthKeys = Array.from(new Set(tickets.map((t) => t.monthKey))).sort((a, b) => a - b);
     return {
@@ -679,6 +886,7 @@
       escalated: tickets.filter((t) => t.escalated).length,
       minDate: tickets.length ? min : null,
       maxDate: tickets.length ? max : null,
+      dataUntil: tickets.length ? until : null,
       weekKeys,
       monthKeys,
     };
@@ -691,6 +899,6 @@
     isoWeekInfo, weekFromKey, weekRange, weeksOfMonth, weeksInIsoYear, nextWeekKey,
     monthKeyOf, monthLabel, monthShort, monthsEndingAt, prevMonthKey, nextMonthKey,
     fmtDateTime, fmtDate, toExcelSerial,
-    computeReport, summarize, weeklyForCategory,
+    computeReport, summarize, weeklyForCategory, validateReport, gestorKey, periodMonthsLabel, buildGestorMatcher,
   };
 });

@@ -86,8 +86,7 @@
 
   function weekLabel(key) {
     const w = C.weekFromKey(key);
-    const dm = (ms) => C.fmtDate(ms).slice(0, 5);
-    return `${w.year} · sem. ${w.week} (${dm(w.start)}–${dm(w.end - 86400000)})`;
+    return `Semana ${w.week} de ${w.year} · ${C.fmtDate(w.start)} – ${C.fmtDate(w.end - 86400000)} · ${C.periodMonthsLabel(w.start, w.end)}`;
   }
 
   function isDark() {
@@ -225,47 +224,20 @@
 
   function initPeriodSelectors() {
     const s = state.summary;
-    const monthSel = $('#monthSelect');
-    monthSel.replaceChildren(...s.monthKeys.slice().reverse().map((k) => el('option', { value: k, text: C.monthLabel(k) })));
-    const firstWeek = s.weekKeys[0];
-    const lastWeek = s.weekKeys[s.weekKeys.length - 1];
-    const all = C.weekRange(firstWeek, lastWeek).map((w) => w.key).reverse();
-    for (const id of ['#weekFrom', '#weekTo']) {
-      $(id).replaceChildren(...all.map((k) => el('option', { value: k, text: weekLabel(k) })));
-    }
-    // Default: month of the latest data week (by its Monday)
-    const defMonth = C.monthKeyOf(C.weekFromKey(lastWeek).start);
-    monthSel.value = String(s.monthKeys.includes(defMonth) ? defMonth : s.monthKeys[s.monthKeys.length - 1]);
-    applyMonth();
-  }
-
-  function applyMonth() {
-    const mk = Number($('#monthSelect').value);
-    const s = state.summary;
     const first = s.weekKeys[0];
     const last = s.weekKeys[s.weekKeys.length - 1];
-    let weeks = C.weeksOfMonth(mk).map((w) => w.key).filter((k) => k >= first && k <= last);
-    if (!weeks.length) {
-      // month with data only in a week that starts in the previous month
-      const k = C.isoWeekInfo(Date.UTC(Math.floor(mk / 100), (mk % 100) - 1, 1)).key;
-      weeks = [Math.min(Math.max(k, first), last)];
-    }
-    $('#weekFrom').value = String(weeks[0]);
-    $('#weekTo').value = String(weeks[weeks.length - 1]);
+    const all = C.weekRange(first, last).map((w) => w.key).reverse();
+    $('#reportWeek').replaceChildren(...all.map((k) => el('option', { value: k, text: weekLabel(k) })));
+    // Default: the latest week that has tickets in the file
+    $('#reportWeek').value = String(last);
   }
 
+  /** The report week plus the previous weeks shown in the tables (oldest first). */
   function selectedWeeks() {
-    let a = Number($('#weekFrom').value);
-    let b = Number($('#weekTo').value);
-    if (a > b) [a, b] = [b, a];
-    let weeks = C.weekRange(a, b);
-    if (weeks.length > MAX_WEEKS) {
-      weeks = weeks.slice(-MAX_WEEKS);
-      $('#weekFrom').value = String(weeks[0].key);
-      toast(`A report can cover at most ${MAX_WEEKS} weeks — the range was shortened.`);
-    }
-    $('#weekFrom').value = String(weeks[0].key);
-    $('#weekTo').value = String(weeks[weeks.length - 1].key);
+    const endKey = Number($('#reportWeek').value);
+    const n = Math.max(1, Math.min(MAX_WEEKS, Number($('#weeksShown').value) || 5));
+    const weeks = [C.weekFromKey(endKey)];
+    while (weeks.length < n) weeks.unshift(C.weekFromKey(C.isoWeekInfo(weeks[0].start - 86400000).key));
     return weeks;
   }
 
@@ -274,10 +246,15 @@
   }
 
   function initSettings() {
-    $('#monthSelect').addEventListener('change', () => { applyMonth(); recompute(); });
-    $('#weekFrom').addEventListener('change', recompute);
-    $('#weekTo').addEventListener('change', recompute);
+    $('#reportWeek').addEventListener('change', recompute);
+    $('#weeksShown').addEventListener('change', recompute);
     $('#monthsBack').addEventListener('change', recompute);
+    $('#inferGestor').addEventListener('change', recompute);
+    $('#checksToggle').addEventListener('click', () => {
+      const list = $('#checksList');
+      list.hidden = !list.hidden;
+      $('#checksToggle').setAttribute('aria-expanded', list.hidden ? 'false' : 'true');
+    });
     let t;
     $('#slmGroups').addEventListener('input', () => { clearTimeout(t); t = setTimeout(recompute, 350); });
     const today = new Date();
@@ -294,13 +271,12 @@
 
   function recompute() {
     if (!state.tickets.length) return;
-    const weeks = selectedWeeks();
-    const reportMonth = Number($('#monthSelect').value) || C.monthKeyOf(weeks[weeks.length - 1].start);
     state.report = C.computeReport(state.tickets, {
-      weeks,
+      weeks: selectedWeeks(),
       slmGroups: slmGroups(),
       monthsBack: Number($('#monthsBack').value) || 7,
-      monthKey: reportMonth,
+      inferGestor: $('#inferGestor').checked,
+      dataUntil: state.summary.dataUntil,
     });
     renderAll();
   }
@@ -310,6 +286,8 @@
   /* ------------------------------------------------------------------ */
 
   function renderAll() {
+    renderPeriod();
+    renderChecks();
     renderKpis();
     renderWeekly();
     renderGestor();
@@ -318,20 +296,48 @@
     applyDataFilters();
   }
 
+  function renderPeriod() {
+    const r = state.report;
+    const w = r.reportWeek;
+    const parts = [
+      el('span', { class: 'pb-main', text: `Semana ${w.week} · ${C.fmtDate(w.start)} – ${C.fmtDate(w.end - 86400000)} · ${r.periodLabel}` }),
+      el('span', { class: 'pb-sub', text: r.weeks.length > 1 ? `Tables show semanas ${r.weeks.map((x) => x.week).join(', ')}` : 'Tables show the report week only' }),
+      el('span', { class: 'pb-sub', text: `Data in file until ${C.fmtDateTime(state.summary.dataUntil)}` }),
+    ];
+    if (r.partialWeek) parts.push(el('span', { class: 'pb-warn', text: `⚠ The file ends before this week is over — figures are as of ${C.fmtDateTime(r.asOf)}.` }));
+    $('#periodBanner').replaceChildren(...parts);
+  }
+
+  function renderChecks() {
+    const checks = state.report.checks;
+    const failed = checks.filter((c) => !c.ok);
+    const box = $('#checksBox');
+    box.hidden = false;
+    box.classList.toggle('fail', failed.length > 0);
+    $('#checksToggle').textContent = failed.length
+      ? `✖ ${failed.length} of ${checks.length} consistency checks failed — Word export is blocked until this is fixed (click for details)`
+      : `✔ All ${checks.length} consistency checks passed (click for details)`;
+    $('#checksList').replaceChildren(...checks.map((c) => el('li', { class: c.ok ? 'ok' : 'bad' },
+      el('span', { class: 'ic', text: c.ok ? '✔' : '✖' }),
+      el('span', null, c.label, c.detail ? el('span', { class: 'det', text: ` — ${c.detail}` }) : null))));
+    if (failed.length) { $('#checksList').hidden = false; $('#checksToggle').setAttribute('aria-expanded', 'true'); }
+    $('#btnWord').disabled = failed.length > 0;
+    $('#btnWord').title = failed.length ? 'Blocked: the report did not pass the consistency checks' : '';
+  }
+
   function renderKpis() {
     const r = state.report;
-    const sum = (arr, f) => arr.reduce((a, x) => a + f(x), 0);
-    const newInc = sum(r.inc, (x) => x.nuevos);
-    const newOt = sum(r.ot, (x) => x.nuevos);
-    const resolved = sum(r.inc, (x) => x.resueltas) + sum(r.ot, (x) => x.resueltas);
+    const i = r.weeks.length - 1;
+    const x = r.inc[i], o = r.ot[i];
+    const wk = `semana ${r.reportWeek.week}`;
+    const newAll = x.nuevos + o.nuevos;
+    const resolved = x.resueltas + o.resueltas;
     const escalated = r.pending.filter((t) => t.escalated).length;
-    const w0 = r.weeks[0], w1 = r.weeks[r.weeks.length - 1];
-    const range = r.weeks.length > 1 ? `sem. ${w0.week}–${w1.week}` : `sem. ${w0.week}`;
     const kpis = [
-      ['New incidencias', newInc, range],
-      ['New OTs', newOt, range],
-      ['Resolved (of new)', resolved, `${newInc + newOt ? Math.round((resolved / (newInc + newOt)) * 100) : 0}% of new cases`],
-      ['Unresolved at period end', r.pending.length, `as of ${C.fmtDate(r.cutoff - 86400000)}`],
+      ['New incidencias', x.nuevos, wk],
+      ['New OTs', o.nuevos, wk],
+      ['Resolved (of new)', resolved, `${newAll ? Math.round((resolved / newAll) * 100) : 0}% of the ${newAll} new cases`],
+      ['Unresolved at end of week', r.pending.length, `as of ${C.fmtDateTime(r.asOf)}`],
       ['Escalated & unresolved', escalated, 'Ericsson · Huawei · Nokia'],
     ];
     $('#kpis').replaceChildren(...kpis.map(([l, v, s]) => el('div', { class: 'kpi' },
@@ -368,8 +374,7 @@
   function renderWeekly() {
     const r = state.report;
     const both = (fn) => ({ inc: r.inc.map(fn), ot: r.ot.map(fn) });
-    $('#weeklyNote').textContent = `${C.monthLabel(r.reportMonth)} · ${r.weeks.length} week(s) from ${C.fmtDate(r.weeks[0].start)} to ${C.fmtDate(r.cutoff - 86400000)}. Data available until ${C.fmtDateTime(state.summary.maxDate)}.` +
-      (r.weeks[r.weeks.length - 1].start > state.summary.maxDate ? ' ⚠ The last selected week(s) are after the last ticket in the file.' : '');
+    $('#weeklyNote').textContent = `Semanas ${r.weeks[0].week}–${r.reportWeek.week}: del ${C.fmtDate(r.weeks[0].start)} al ${C.fmtDate(r.cutoff - 86400000)}. Each week shows the situation at the end of that week.`;
     $('#tblNew').replaceChildren(dualTable('CASOS NUEVOS SEMANA', [
       { label: 'Nuevos durante la semana', ...both((x) => x.nuevos) },
       { label: 'Resueltas de las abiertas durante la semana', ...both((x) => x.resueltas) },
@@ -408,20 +413,24 @@
         r.weeks.map((w) => el('th', { text: `sem. ${w.week}`, title: weekLabel(w.key) })),
         el('th', { text: 'Total' }))),
       el('tbody', null,
-        r.gestores.map((g) => el('tr', null,
+        r.gestores.map((g) => el('tr', { class: g.unidentified ? 'unidentified' : null },
           el('td', { text: g.gestor }),
           g.counts.map((v) => el('td', { class: v === 0 ? 'zero' : null, text: v })),
           el('td', { text: g.total, style: 'font-weight:600' }))),
         el('tr', { class: 'total' }, el('td', { text: 'TOTAL' }), totals.map((v) => el('td', { text: v })),
           el('td', { text: totals.reduce((a, b) => a + b, 0) }))));
     box.replaceChildren(table);
+    const notes = [`Totals match “Nuevos durante la semana” (Incidencias) in 2.1.`];
+    if (r.gestorUnidentified) notes.push(`Across the ${r.weeks.length} week(s) shown, ${r.gestorUnidentified} incidencia(s) have no gestor in “Current action” (e.g. “JR - Trabajando”, empty or DEVUELTO) and are shown as “Sin gestor identificado”.`);
+    if (r.gestorInferred) notes.push(`${r.gestorInferred} gestor(s) were taken from the ticket description (option enabled); this is stated in the Word report.`);
+    $('#gestorNote').textContent = notes.join(' ');
   }
 
   function renderPending() {
     const r = state.report;
     const f = state.pendingFilter;
     const list = r.pending.filter((t) => f === 'all' || t.category === f);
-    $('#pendingCount').textContent = `${list.length} case(s) unresolved at ${C.fmtDate(r.cutoff - 86400000)}`;
+    $('#pendingCount').textContent = `${list.length} case(s) unresolved at the end of semana ${r.reportWeek.week} (${C.fmtDateTime(r.asOf)})`;
     const box = $('#pendingList');
     if (!list.length) {
       box.replaceChildren(el('p', { class: 'muted', text: 'No unresolved cases 🎉' }));
@@ -525,6 +534,7 @@
     { key: 'week', label: 'Creation week', num: true },
     { key: 'month', label: 'Creation month', num: true },
     { key: 'year', label: 'Creation year', num: true },
+    { key: 'weekYear', label: 'Year of the week (ISO)', num: true },
     { key: 'priority', label: 'Processing priority' },
     { key: 'category', label: 'Failure / OT', fmt: (v) => (v === 'INC' ? 'Failure' : 'OT') },
     { key: 'type', label: 'Ticket type' },
@@ -533,6 +543,7 @@
     { key: 'groupName', label: 'Initiator - Group abbreviation name' },
     { key: 'action', label: 'Current action' },
     { key: 'gestor', label: 'Gestor' },
+    { key: 'gestorDesc', label: 'Gestor (from description)' },
     { key: 'problema', label: 'Problema' },
     { key: 'tecnico', label: 'Técnico' },
   ];
@@ -637,7 +648,7 @@
   /* ------------------------------------------------------------------ */
 
   function setBusy(busy, msg) {
-    $('#btnWord').disabled = busy;
+    $('#btnWord').disabled = busy || !!(state.report && state.report.checks.some((c) => !c.ok));
     $('#btnExcel').disabled = busy;
     $('#actionStatus').textContent = msg || '';
   }
@@ -660,13 +671,14 @@
 
   async function generateWord() {
     if (!state.report) return;
+    if (state.report.checks.some((c) => !c.ok)) { toast('The report did not pass the consistency checks — see the list above.', true); return; }
     setBusy(true, 'Building the Word report…');
     await nextFrame();
     try {
       const r = state.report;
       const labels = r.months.map(C.monthShort);
       const idx = r.months.length - 1;
-      const monthTxt = C.monthLabel(r.reportMonth);
+      const monthTxt = C.monthLabel(r.reportMonth) + (r.partialMonth ? ` (hasta ${C.fmtDate(r.asOf)})` : '');
       const charts = {};
       const titles = {
         opened: ['Casos abiertos por mes y prioridad', `Casos abiertos en ${monthTxt} por prioridad`],
@@ -702,11 +714,11 @@
         includeDescription: $('#includeDesc').checked,
         queueInc: groups[0] || 'XSP00025',
         queueOt: groups[1] || 'XSP00027',
-        dataUntil: state.summary.maxDate,
+        dataUntil: state.summary.dataUntil,
       };
       const doc = SLMDocx.buildDocument(window.docx, C, r, meta, { logo, charts });
       const blob = await docx.Packer.toBlob(doc);
-      const name = `INFORME-SLM-OSS-Sortis-${safeFilePart(monthTxt.replace(' ', '-'))}-sem${r.weeks[0].week}-${r.weeks[r.weeks.length - 1].week}.docx`;
+      const name = `INFORME-SLM-OSS-Sortis-${r.reportWeek.year}-Semana${String(r.reportWeek.week).padStart(2, '0')}-${safeFilePart(r.periodLabel.replace(/ \/ /g, '-'))}.docx`;
       downloadBlob(blob, name);
       setBusy(false, '');
       toast('Word report downloaded.');
@@ -773,7 +785,7 @@
     const r = state.report;
     if (!r) return;
     const wk = r.weeks.map((w) => `sem. ${w.week}`);
-    const aoa = [[`Informe SLM-OSS · ${C.monthLabel(r.reportMonth)}`], []];
+    const aoa = [[`Informe SLM-OSS · Semana ${r.reportWeek.week} de ${r.reportWeek.year} (${C.fmtDate(r.reportWeek.start)} – ${C.fmtDate(r.reportWeek.end - 86400000)}) · ${r.periodLabel}`], []];
     const block = (title, rows) => {
       aoa.push([title, ...wk.map((w) => `INC ${w}`), '', ...wk.map((w) => `OT ${w}`)]);
       for (const [label, fn] of rows) aoa.push([label, ...r.inc.map(fn), '', ...r.ot.map(fn)]);

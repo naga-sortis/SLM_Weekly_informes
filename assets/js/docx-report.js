@@ -27,7 +27,11 @@
    */
   function buildDocument(D, C, report, meta, images = {}) {
     const S = C.xmlSafe;
-    const monthName = C.monthLabel(report.reportMonth);
+    const rw = report.reportWeek;
+    const monthName = report.periodLabel; // month(s) of the report week
+    const weekTitle = `Semana ${rw.week} de ${rw.year}`;
+    const weekDates = `del ${C.fmtDate(rw.start)} al ${C.fmtDate(rw.end - 86400000)}`;
+    const trendMonth = C.monthLabel(report.reportMonth) + (report.partialMonth ? ` (hasta el ${C.fmtDate(report.asOf)})` : '');
     const weeks = report.weeks;
     const n = weeks.length;
 
@@ -141,22 +145,22 @@
 
     /* ---------- gestor table ---------- */
     function gestorTable() {
-      const GL = Math.min(4200, CONTENT_W - n * 900 - 900);
-      const GW = Math.floor((CONTENT_W - GL - 900) / n);
-      const widths = [GL, ...weeks.map(() => GW), 900];
+      const GL = Math.max(2600, Math.min(4200, CONTENT_W - n * 900 - 800));
+      const GW = Math.floor((CONTENT_W - GL - 800) / n);
+      const widths = [GL, ...weeks.map(() => GW), 800];
       const head = new D.TableRow({
         tableHeader: true,
         children: [
           cell('CASOS POR GESTOR', { width: GL, fill: DARK, color: 'FFFFFF', bold: true, left: true }),
           ...weeks.map((w) => cell(wkLabel(w), { width: GW, fill: DARK, color: 'FFFFFF', bold: true })),
-          cell('Total', { width: 900, fill: ORANGE, color: 'FFFFFF', bold: true }),
+          cell('Total', { width: 800, fill: ORANGE, color: 'FFFFFF', bold: true }),
         ],
       });
       const rows = report.gestores.map((g, idx) => new D.TableRow({
         children: [
-          cell(g.gestor, { width: GL, left: true, fill: idx % 2 ? GREY : undefined }),
+          cell(g.gestor, { width: GL, left: true, fill: idx % 2 ? GREY : undefined, color: g.unidentified ? '606060' : undefined }),
           ...g.counts.map((v) => cell(v, { width: GW, fill: idx % 2 ? GREY : undefined })),
-          cell(g.total, { width: 900, bold: true, fill: idx % 2 ? GREY : undefined }),
+          cell(g.total, { width: 800, bold: true, fill: idx % 2 ? GREY : undefined }),
         ],
       }));
       const totals = weeks.map((_, i) => report.gestores.reduce((a, g) => a + g.counts[i], 0));
@@ -164,7 +168,7 @@
         children: [
           cell('TOTAL', { width: GL, left: true, bold: true, fill: 'E4E7EC' }),
           ...totals.map((v) => cell(v, { width: GW, bold: true, fill: 'E4E7EC' })),
-          cell(totals.reduce((a, b) => a + b, 0), { width: 900, bold: true, fill: 'E4E7EC' }),
+          cell(totals.reduce((a, b) => a + b, 0), { width: 800, bold: true, fill: 'E4E7EC' }),
         ],
       }));
       return table([head, ...rows], widths);
@@ -183,8 +187,8 @@
     children.push(
       text(meta.title || 'Informe SLM-OSS', { bold: true, size: 52, color: ORANGE }, { alignment: D.AlignmentType.CENTER, spacing: { before: 800, after: 120 } }),
       text(meta.subtitle || '', { size: 32, color: '404040' }, { alignment: D.AlignmentType.CENTER, spacing: { after: 400 } }),
-      text(monthName, { bold: true, size: 36 }, { alignment: D.AlignmentType.CENTER, spacing: { after: 120 } }),
-      text(`Semanas ${weeks[0].week}${n > 1 ? ' a ' + weeks[n - 1].week : ''} (${C.fmtDate(weeks[0].start)} – ${C.fmtDate(weeks[n - 1].end - 86400000)})`,
+      text(`${weekTitle} · ${monthName}`, { bold: true, size: 36 }, { alignment: D.AlignmentType.CENTER, spacing: { after: 120 } }),
+      text(`Del ${C.fmtDate(rw.start)} al ${C.fmtDate(rw.end - 86400000)}`,
         { size: 22, color: '606060' }, { alignment: D.AlignmentType.CENTER, spacing: { after: 1600 } }),
       text('Revisiones:', { bold: true, size: 20 }, { spacing: { after: 80 } }),
     );
@@ -213,11 +217,13 @@
     children.push(h1('1 INTRODUCCIÓN'));
     children.push(text(
       `El presente documento recoge la actividad del servicio SLM-OSS (${meta.subtitle || 'Gestores Propietarios'}) ` +
-      `correspondiente a ${monthName}, semanas ${weeks[0].week} a ${weeks[n - 1].week} ` +
-      `(del ${C.fmtDate(weeks[0].start)} al ${C.fmtDate(weeks[n - 1].end - 86400000)}).`, { size: 21 }, { spacing: { after: 120 } }));
+      `correspondiente a la ${weekTitle.toLowerCase()} (${weekDates}, ${monthName})` +
+      (n > 1 ? `, junto con la evolución de las semanas ${weeks[0].week} a ${weeks[n - 2].week} (desde el ${C.fmtDate(weeks[0].start)}).` : '.') +
+      ' Cada semana refleja la situación de los casos al cierre de esa semana.', { size: 21 }, { spacing: { after: 120 } }));
     children.push(text(
       'Las tablas y gráficos presentados en este informe tienen como base el fichero de BRISE que nos envía semanalmente el CC – OSS. ' +
-      `Datos disponibles hasta el ${C.fmtDateTime(meta.dataUntil)}.`, { size: 21 }, { spacing: { after: 120 } }));
+      `Datos disponibles hasta el ${C.fmtDateTime(meta.dataUntil)}.` +
+      (report.partialWeek ? ` La semana ${rw.week} se presenta con los datos disponibles a esa fecha.` : ''), { size: 21 }, { spacing: { after: 120 } }));
 
     /* ---------- 2 Detalle semanal ---------- */
     children.push(h1('2 DETALLE SEMANAL'));
@@ -229,14 +235,22 @@
       { italics: true, size: 17, color: '606060' }));
 
     children.push(h2('2.2 Nº Casos por gestor'));
-    if (report.gestores.length) children.push(gestorTable());
-    else children.push(text('No hay incidencias con gestor identificado en las semanas del informe.', { italics: true }));
+    if (report.gestores.length) {
+      children.push(gestorTable());
+      const notes = ['Incidencias nuevas de cada semana agrupadas por el gestor indicado en la acción actual (GESTOR - PROBLEMA - TÉCNICO); el total de cada semana coincide con “Nuevos durante la semana” de la tabla 2.1.'];
+      if (report.gestorUnidentified) notes.push(`“Sin gestor identificado”: incidencias cuya acción actual no indica gestor (técnico trabajando, sin acción o devueltas).`);
+      if (report.gestorInferred) notes.push(`${report.gestorInferred} incidencia(s) sin gestor en la acción actual se han asignado según el gestor citado en su descripción.`);
+      children.push(text(notes.join(' '), { italics: true, size: 17, color: '606060' }, { spacing: { before: 80 } }));
+    } else {
+      children.push(text('No hay incidencias nuevas en las semanas del informe.', { italics: true }));
+    }
     children.push(spacer());
 
     children.push(h2('2.3 Casos sin resolver'));
     children.push(dualTable('CASOS SIN RESOLVER', unresolvedRows), spacer());
 
     children.push(h2('2.4 Detalle de los casos sin resolver'));
+    children.push(text(`Casos pendientes al cierre de la ${weekTitle.toLowerCase()} (${C.fmtDateTime(report.asOf)}): ${report.pending.length}.`, { size: 20 }, { spacing: { after: 120 } }));
     if (!report.pending.length) {
       children.push(text('No hay casos sin resolver al cierre del periodo.', { italics: true }));
     }
@@ -280,6 +294,7 @@
     /* ---------- 3 Detalle mensual ---------- */
     children.push(new D.Paragraph({ children: [new D.PageBreak()] }));
     children.push(h1('3 DETALLE MENSUAL'));
+    children.push(text(`Evolución de los últimos ${report.months.length} meses hasta ${trendMonth}, con datos hasta el cierre de la ${weekTitle.toLowerCase()}.`, { size: 20 }, { spacing: { after: 120 } }));
     const ch = images.charts || {};
     const intro = (what, by) => text(
       `Gráfico de acuerdo a los casos ${what} al grupo SLM en cola Oceane ${meta.queueInc || 'XSP00025'} y OTs en cola ${meta.queueOt || 'XSP00027'}, ` +
@@ -317,14 +332,14 @@
 
     const footer = new D.Footer({
       children: [para([
-        run(`${meta.title || 'Informe SLM-OSS'} · ${monthName}`, { size: 16, color: '808080' }),
+        run(`${meta.title || 'Informe SLM-OSS'} · ${weekTitle} · ${monthName}`, { size: 16, color: '808080' }),
         new D.TextRun({ children: ['\tPágina ', D.PageNumber.CURRENT, ' de ', D.PageNumber.TOTAL_PAGES], size: 16, color: '808080' }),
       ], { tabStops: [{ type: D.TabStopType.RIGHT, position: CONTENT_W }] })],
     });
 
     return new D.Document({
       creator: 'SLM Weekly Informes',
-      title: `${meta.title || 'Informe SLM-OSS'} ${monthName}`,
+      title: `${meta.title || 'Informe SLM-OSS'} ${weekTitle} ${monthName}`,
       description: 'Informe SLM-OSS generado automáticamente',
       styles: {
         default: { document: { run: { font: 'Calibri', size: 20 } } },
