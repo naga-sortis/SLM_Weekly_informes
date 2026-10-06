@@ -82,9 +82,12 @@
           </select>
         </div>
         <div class="field">
-          <label for="monthsBack">Months in trend charts</label>
+          <label for="monthsBack">Trend charts (section 3)</label>
           <select id="monthsBack">
-            <option value="3">3</option><option value="6">6</option><option value="7" selected>7</option><option value="12">12</option>
+            <optgroup label="Last months up to the report week">
+              <option value="3">Last 3 months</option><option value="6">Last 6 months</option><option value="7" selected>Last 7 months</option><option value="12">Last 12 months</option>
+            </optgroup>
+            <optgroup label="Calendar year (only that year)" id="trendYears"></optgroup>
           </select>
         </div>
         <div class="field span-2">
@@ -202,7 +205,7 @@
           <summary>How the figures are calculated</summary>
           <ul>
             <li><b>Incidencias</b> = ticket type <i>Failure</i>; <b>OTs</b> = every other type (Work order, Information request…).</li>
-            <li><b>Escalada</b> = the <i>Third party reference</i> points to a vendor: <code>STA-</code> Ericsson, <code>H-</code> Huawei, <code>1-</code> Nokia.</li>
+            <li><b>Escalada</b> = the <i>Third party reference</i> points to a vendor: <code>STA-</code> or <code>CSR</code> Ericsson, <code>H-</code> Huawei, <code>1-</code> Nokia.</li>
             <li><b>Devuelta</b> = <i>Current action</i> is “DEVUELTO”.</li>
             <li><b>Resuelta</b> = status is not <i>Current</i> and the <i>Restoration date</i> is before the end of the week (so past weeks show the situation at the time).</li>
             <li><b>Backlog</b> = cases created before the week, not returned and still unresolved when the week starts.</li>

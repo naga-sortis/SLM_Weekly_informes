@@ -329,11 +329,12 @@
 
   const VENDORS = ['Ericsson', 'Huawei', 'Nokia'];
 
-  /** STA- → Ericsson, H- → Huawei, 1- → Nokia. Other non-empty references → "Otro". */
+  /** STA- or CSR → Ericsson, H- → Huawei, 1- → Nokia. Other non-empty references → "Otro". */
   function vendorOf(ref) {
     const r = str(ref).toUpperCase();
     if (!r) return '';
     if (/^STA\s*-/.test(r)) return 'Ericsson';
+    if (/^CSR(?![A-Z])/.test(r)) return 'Ericsson'; // "CSR-00621504", "CSR 00401055", "CSR STA-00725162"
     if (/^H\s*-/.test(r)) return 'Huawei';
     if (/^1\s*-\s*\S/.test(r)) return 'Nokia';
     return 'Otro';
@@ -794,7 +795,16 @@
       .sort((a, b) => b.created - a.created);
 
     // 3.x Monthly trends (up to the end of the report week)
-    const months = monthsEndingAt(reportMonth, monthsBack);
+    // Trend charts: the last N months up to the report month, or one calendar year
+    // (January → December, or → the report month when it is the report week's year).
+    const trendYear = options.trendYear ? Number(options.trendYear) : null;
+    let months;
+    if (trendYear && trendYear <= Math.floor(reportMonth / 100)) {
+      const lastM = trendYear === Math.floor(reportMonth / 100) ? reportMonth % 100 : 12;
+      months = Array.from({ length: lastM }, (_, i) => trendYear * 100 + i + 1);
+    } else {
+      months = monthsEndingAt(reportMonth, monthsBack);
+    }
     const monthSet = new Set(months);
     const prioSeries = (list, monthOf) => {
       const keys = ['OTs', 'Inc. P1', 'Inc. P2', 'Inc. P3', 'Inc. P4', 'Inc. otras'];
@@ -850,9 +860,13 @@
     const partialMonthNow = monthKeyOf(asOf) === reportMonth && monthKeyOf(asOf + DAY) === reportMonth;
     const monthLabels = months.map((m) => (m === reportMonth && partialMonthNow ? `${monthShort(m)} (hasta ${fmtDate(asOf).slice(0, 5)})` : monthShort(m)));
 
+    const trendEnd = months[months.length - 1];
     const report = {
       weeks,
       weekSplit,
+      trendYear: trendYear && months[0] === trendYear * 100 + 1 ? trendYear : null,
+      trendEnd,
+      trendEndPartial: trendEnd === reportMonth && partialMonthNow,
       monthLabels,
       reportWeek: lastWeek,
       cutoff,
@@ -949,8 +963,9 @@
     add(r.pending.every((t) => t.created < r.cutoff && !t.devuelto && !resolvedBefore(t, r.cutoff)),
       '2.4: every listed case was created before the end of the week and still unresolved then', 'Some listed cases are not pending at the cut-off.');
     const openedLast = sum(r.monthly.opened.map((s) => s.data[s.data.length - 1]));
-    const directOpened = scope.filter((t) => t.monthKey === r.reportMonth).length;
-    add(openedLast === directOpened, `3.1: cases opened in ${monthLabel(r.reportMonth)} = tickets created that month up to the cut-off`, `Chart shows ${openedLast}, data has ${directOpened}.`);
+    const lastMonth = r.months[r.months.length - 1];
+    const directOpened = scope.filter((t) => t.monthKey === lastMonth).length;
+    add(openedLast === directOpened, `3.1: cases opened in ${monthLabel(lastMonth)} = tickets created that month up to the cut-off`, `Chart shows ${openedLast}, data has ${directOpened}.`);
     const statusLast = sum(r.monthly.status.map((s) => s.data[s.data.length - 1]));
     add(statusLast === directOpened, '3.4: status chart covers every case of the month exactly once', `Chart shows ${statusLast}, data has ${directOpened}.`);
 
@@ -967,6 +982,14 @@
       return bar < p.inc + p.ot;
     });
     add(!badMonth.length, '3.1: each monthly bar includes the report-week cases of that month', `Bar too low for ${badMonth.map((p) => monthShort(p.monthKey)).join(', ')}.`);
+
+    if (r.trendYear) {
+      add(r.months.every((m) => Math.floor(m / 100) === r.trendYear) && r.months[0] % 100 === 1,
+        `Trend charts show only the year ${r.trendYear}, from January`, 'Months from another year are included.');
+      const yearOpened = sum(r.monthly.opened.map((x) => x.data.reduce((a, b) => a + b, 0)));
+      const directYear = scope.filter((t) => Math.floor(t.monthKey / 100) === r.trendYear).length;
+      add(yearOpened === directYear, `3.1: cases opened in ${r.trendYear} = tickets created that year up to the cut-off`, `Chart ${yearOpened} vs data ${directYear}.`);
+    }
 
     // Dates
     add(monthKeyOf(r.reportWeek.start) === r.reportMonth || monthKeyOf(r.reportWeek.end - 1) === r.reportMonth,
@@ -1356,7 +1379,10 @@
     } else {
       txt = `${head}, todos ellos en ${monthLabel(r.weekSplit[0].monthKey).toLowerCase()}.`;
     }
-    if (r.partialMonth) txt += ` El mes de ${monthLabel(r.reportMonth).toLowerCase()} incluye solo los datos hasta el ${fmtDate(r.asOf)}.`;
+    if (r.trendYear && !r.weekSplit.some((p) => r.months.includes(p.monthKey))) {
+      return `${head}. Los gráficos mensuales muestran el año ${r.trendYear} (de enero a diciembre).`;
+    }
+    if (r.partialMonth && r.months.includes(r.reportMonth)) txt += ` El mes de ${monthLabel(r.reportMonth).toLowerCase()} incluye solo los datos hasta el ${fmtDate(r.asOf)}.`;
     return txt;
   }
 

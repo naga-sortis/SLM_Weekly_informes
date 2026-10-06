@@ -31,7 +31,7 @@
     const monthName = report.periodLabel; // month(s) of the report week
     const weekTitle = `Semana ${rw.week} de ${rw.year}`;
     const weekDates = `del ${C.fmtDate(rw.start)} al ${C.fmtDate(rw.end - 86400000)}`;
-    const trendMonth = C.monthLabel(report.reportMonth) + (report.partialMonth ? ` (hasta el ${C.fmtDate(report.asOf)})` : '');
+    const trendMonth = C.monthLabel(report.trendEnd ?? report.reportMonth) + ((report.trendEndPartial ?? report.partialMonth) ? ` (hasta el ${C.fmtDate(report.asOf)})` : '');
     const weeks = report.weeks;
     const n = weeks.length;
 
@@ -359,7 +359,9 @@
     if (inc.monthly) {
       startTop(true);
       children.push(H(1, 'DETALLE MENSUAL'));
-      children.push(text(`Evolución de los últimos ${report.months.length} meses hasta ${trendMonth}, con datos hasta el cierre de la ${weekTitle.toLowerCase()}.`, { size: 20 }, { spacing: { after: 120 } }));
+      children.push(text(report.trendYear
+        ? `Evolución mensual del año ${report.trendYear} (de enero a ${C.MONTHS_ES[(report.trendEnd % 100) - 1].toLowerCase()}${report.trendEndPartial ? `, hasta el ${C.fmtDate(report.asOf)}` : ''}), con datos hasta el cierre de la ${weekTitle.toLowerCase()}.`
+        : `Evolución de los últimos ${report.months.length} meses hasta ${trendMonth}, con datos hasta el cierre de la ${weekTitle.toLowerCase()}.`, { size: 20 }, { spacing: { after: 120 } }));
       children.push(text(C.weekSplitText(report), { size: 20 }, { spacing: { after: 120 } }));
       const ch = images.charts || {};
       const intro = (what, by) => text(
@@ -391,7 +393,7 @@
       children.push(intro('escalados', 'el gestor'));
       addCharts('escByGestor');
       children.push(H(3, 'Casos escalados por fabricante'));
-      children.push(intro('escalados', 'el fabricante (STA- Ericsson, H- Huawei, 1- Nokia)'));
+      children.push(intro('escalados', 'el fabricante (STA- o CSR Ericsson, H- Huawei, 1- Nokia)'));
       addCharts('escByVendor');
       children.push(H(2, 'Estado de los casos'));
       children.push(intro('abiertos', 'el estado'));

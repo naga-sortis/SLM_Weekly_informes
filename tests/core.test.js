@@ -311,3 +311,32 @@ test('Word builder: sections can be left out and are renumbered', () => {
   const doc = R.buildDocument(D, C, r, { title: 'T', include: { s21: false, monthly: false }, team: { data: T, note: 'n' } }, {});
   assert.ok(doc);
 });
+
+test('CSR third party references are Ericsson', () => {
+  assert.equal(C.vendorOf('CSR-00621504'), 'Ericsson');
+  assert.equal(C.vendorOf('CSR 00401055'), 'Ericsson');
+  assert.equal(C.vendorOf('CSR STA-00725162'), 'Ericsson');
+  assert.equal(C.vendorOf('csr-1'), 'Ericsson');
+  assert.equal(C.vendorOf('CSRX1'), 'Otro'); // another code that only starts with the letters
+});
+
+test('Trend charts can show one calendar year only', () => {
+  const ex = C.extractTickets([sheet([
+    ticket('A', [2025, 10, 20]), ticket('B', [2025, 11, 3]), ticket('C', [2026, 0, 15]), ticket('D', [2026, 8, 22]),
+  ])]);
+  const w = [C.weekFromKey(202639)];
+  const def = C.computeReport(ex.tickets, { weeks: w, slmGroups: [], monthsBack: 12 });
+  assert.equal(def.trendYear, null);
+  assert.equal(C.monthShort(def.months[0]), '2025-10'); // last 12 months reach back into 2025
+  const y26 = C.computeReport(ex.tickets, { weeks: w, slmGroups: [], trendYear: 2026 });
+  assert.ok(y26.checks.every((c) => c.ok), JSON.stringify(y26.checks.filter((c) => !c.ok)));
+  assert.deepEqual([C.monthShort(y26.months[0]), C.monthShort(y26.months[y26.months.length - 1])], ['2026-01', '2026-09']);
+  assert.equal(y26.monthly.opened.reduce((a, s) => a + s.data.reduce((x, y) => x + y, 0), 0), 2); // only C and D
+  const y25 = C.computeReport(ex.tickets, { weeks: w, slmGroups: [], trendYear: 2025 });
+  assert.ok(y25.checks.every((c) => c.ok));
+  assert.equal(y25.months.length, 12);
+  assert.ok(y25.months.every((m) => Math.floor(m / 100) === 2025));
+  assert.match(C.weekSplitText(y25), /año 2025/);
+  const future = C.computeReport(ex.tickets, { weeks: w, slmGroups: [], trendYear: 2027, monthsBack: 7 });
+  assert.equal(future.trendYear, null); // a year after the report week is never used
+});

@@ -19,7 +19,7 @@ Everything runs **in the browser**: the Excel file is never uploaded anywhere. A
 | # | Field | Source column |
 |---|-------|---------------|
 | 1 | Ticket ID | `Ticket ID` (duplicates ignored) |
-| 2 | Third party reference → vendor | `Third party reference`: `STA-` Ericsson, `H-` Huawei, `1-` Nokia |
+| 2 | Third party reference → vendor | `Third party reference`: `STA-` or `CSR` Ericsson, `H-` Huawei, `1-` Nokia |
 | 3 | Creation date | `Creation date` |
 | 4–6 | Creation week / month / year | `Creation week`, `Creation month`, `Creation year` |
 | 7 | Processing priority and Failure / OT | `Processing priority`, `Ticket type` (`Failure` = Incidencia, any other type = OT) |
@@ -30,7 +30,7 @@ Everything runs **in the browser**: the Excel file is never uploaded anywhere. A
 
 ## Report rules
 
-* **Escalada**: the third party reference belongs to a vendor (Ericsson, Huawei or Nokia).
+* **Escalada**: the third party reference belongs to a vendor: `STA-` or `CSR` → Ericsson, `H-` → Huawei, `1-` → Nokia.
 * **Devuelta**: `Current action` is `DEVUELTO`.
 * **Resuelta**: the status is not `Current` and the `Restoration date` falls before the end of the week. Past weeks therefore show the situation as it was then.
 * **Backlog**: cases created before the week that were not returned and were still unresolved when the week started.
@@ -38,6 +38,10 @@ Everything runs **in the browser**: the Excel file is never uploaded anywhere. A
 * **Casos por gestor**: every new incidencia of each week is counted once, under the gestor from the first part of `Current action` (`GESTOR - PROBLEMA - TÉCNICO`). Spelling variants are merged (NFM-T / NFMT / NFM -T, ENM 3 / ENM3…). Incidencias with no gestor in the action (`JR - Trabajando`, empty, `DEVUELTO`) appear as *Sin gestor identificado*, so the weekly totals always equal “Nuevos durante la semana”. There is an optional switch, off by default, that takes the gestor from the description instead; the report states when it's used.
 * **Cut-off**: nothing created or resolved after the end of the report week is counted, including in the monthly charts. A past week therefore always gives the same figures.
 * Week, month and year are recalculated from the creation date (ISO weeks), and the file's own columns are cross-checked against them.
+
+## Trend charts (section 3)
+
+*Trend charts* in step 2 offers either the **last 3 / 6 / 7 / 12 months** up to the report week (default: 7), or **one calendar year**. The years run from the latest to the oldest in the file, up to the report week's year. With a year selected, the charts, their number tables and the Word report show only that year: January–December, or January to the report month for the current year.
 
 ## Month / Year view
 

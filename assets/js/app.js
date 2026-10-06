@@ -275,12 +275,33 @@
     $('#btnExcel').addEventListener('click', exportExcel);
   }
 
+  /** Calendar years for the trend charts: from the latest to the oldest year in the file, up to the report week's year. */
+  function refreshTrendYears() {
+    const sel = $('#monthsBack');
+    const group = $('#trendYears');
+    // same rule as the core: the report month is the month of the last moment covered by the week and the data
+    const w = C.weekFromKey(Number($('#reportWeek').value));
+    const asOf = Math.min(w.end - 1000, state.summary.dataUntil ?? w.end - 1000);
+    const ry = Math.floor(C.monthKeyOf(Math.max(w.start, asOf)) / 100);
+    const years = Array.from(new Set(state.tickets.map((t) => t.year))).filter((y) => y <= ry).sort((a, b) => b - a);
+    const prev = sel.value;
+    group.replaceChildren(...years.map((y) => el('option', { value: `y${y}`, text: `${y} (Jan–${y === ry ? 'report month' : 'Dec'})` })));
+    if (prev.startsWith('y') && !years.includes(Number(prev.slice(1)))) {
+      sel.value = years.length ? `y${years[0]}` : '7';
+      toast(`Trend charts: ${prev.slice(1)} is after the report week, showing ${years.length ? years[0] : 'the last 7 months'} instead.`);
+    } else {
+      sel.value = prev;
+    }
+  }
+
   function recompute() {
     if (!state.tickets.length) return;
+    refreshTrendYears();
     state.report = C.computeReport(state.tickets, {
       weeks: selectedWeeks(),
       slmGroups: slmGroups(),
       monthsBack: Number($('#monthsBack').value) || 7,
+      trendYear: $('#monthsBack').value.startsWith('y') ? Number($('#monthsBack').value.slice(1)) : null,
       inferGestor: $('#inferGestor').checked,
       dataUntil: state.summary.dataUntil,
     });
@@ -1319,15 +1340,15 @@
       const r = state.report;
       const labels = r.monthLabels;
       const idx = r.months.length - 1;
-      const monthTxt = C.monthLabel(r.reportMonth) + (r.partialMonth ? ` (hasta ${C.fmtDate(r.asOf)})` : '');
+      const monthTxt = C.monthLabel(r.trendEnd) + (r.trendEndPartial ? ` (hasta ${C.fmtDate(r.asOf)})` : '');
       const charts = {};
       const titles = {
-        opened: ['Casos abiertos por mes y prioridad', `Casos abiertos en ${monthTxt} por prioridad`],
-        resolved: ['Casos resueltos por mes y prioridad', `Casos resueltos en ${monthTxt} por prioridad`],
-        escalated: ['Casos escalados por mes y prioridad', `Casos escalados en ${monthTxt} por prioridad`],
-        escByGestor: ['Casos escalados por mes y gestor', `Casos escalados en ${monthTxt} por gestor`],
-        escByVendor: ['Casos escalados por mes y fabricante', `Casos escalados en ${monthTxt} por fabricante`],
-        status: ['Casos abiertos por mes y estado', `Casos abiertos en ${monthTxt} por estado`],
+        opened: [`Casos abiertos por mes y prioridad${r.trendYear ? ` — ${r.trendYear}` : ''}`, `Casos abiertos en ${monthTxt} por prioridad`],
+        resolved: [`Casos resueltos por mes y prioridad${r.trendYear ? ` — ${r.trendYear}` : ''}`, `Casos resueltos en ${monthTxt} por prioridad`],
+        escalated: [`Casos escalados por mes y prioridad${r.trendYear ? ` — ${r.trendYear}` : ''}`, `Casos escalados en ${monthTxt} por prioridad`],
+        escByGestor: [`Casos escalados por mes y gestor${r.trendYear ? ` — ${r.trendYear}` : ''}`, `Casos escalados en ${monthTxt} por gestor`],
+        escByVendor: [`Casos escalados por mes y fabricante${r.trendYear ? ` — ${r.trendYear}` : ''}`, `Casos escalados en ${monthTxt} por fabricante`],
+        status: [`Casos abiertos por mes y estado${r.trendYear ? ` — ${r.trendYear}` : ''}`, `Casos abiertos en ${monthTxt} por estado`],
       };
       for (const [, key, split] of CHART_DEFS) {
         const series = r.monthly[key];
