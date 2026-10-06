@@ -208,6 +208,10 @@
       ['2.6', 'Otros trabajos a destacar', 1], ['3', 'DETALLE MENSUAL', 0], ['3.1', 'Casos abiertos', 1], ['3.2', 'Casos resueltos', 1],
       ['3.3', 'Casos escalados', 1], ['3.4', 'Estado de los casos', 1],
     ];
+    if (meta.period && meta.period.data) {
+      toc.push([`4`, `RESUMEN DEL PERIODO: ${meta.period.data.label.toUpperCase()}`, 0], ['4.1', 'Casos abiertos y resueltos', 1],
+        ['4.2', 'Estado de los casos', 1], ['4.3', 'Casos escalados por fabricante', 1], ['4.4', 'Casos por gestor', 1]);
+    }
     for (const [num, title, lvl] of toc) {
       children.push(para([run(`${num}  `, { bold: lvl === 0 }), run(title, { bold: lvl === 0 })], { indent: { left: lvl * 400 }, spacing: { after: 60 } }));
     }
@@ -336,6 +340,67 @@
     children.push(h2('3.4 Estado de los casos'));
     children.push(intro('abiertos', 'el estado'));
     addCharts('status');
+
+    /* ---------- 4 Resumen del periodo (Month / Year filter) ---------- */
+    if (meta.period && meta.period.data) {
+      const P = meta.period.data;
+      const I = P.summary.INC, O = P.summary.OT;
+      const pc = images.periodCharts || {};
+      children.push(new D.Paragraph({ children: [new D.PageBreak()] }));
+      children.push(h1(`4 RESUMEN DEL PERIODO: ${P.label.toUpperCase()}`));
+      children.push(text(meta.period.note, { size: 20 }, { spacing: { after: 160 } }));
+      const SW = [CONTENT_W - 3 * 1500, 1500, 1500, 1500];
+      const srows = [
+        ['Casos abiertos en el periodo', I.abiertos, O.abiertos, true],
+        ['   Resueltos', I.resueltos, O.resueltos],
+        ['   Pendientes al cierre', I.pendientes, O.pendientes],
+        ['   Devueltos', I.devueltos, O.devueltos],
+        ['Escalados (Ericsson / Huawei / Nokia)', I.escalados, O.escalados],
+        ['Abiertos por el SLM', I.abiertosSLM, O.abiertosSLM],
+        ['Resueltos durante el periodo (incl. abiertos antes)', I.resueltosEnPeriodo, O.resueltosEnPeriodo],
+        ['Pendientes totales al cierre (incl. backlog)', I.pendientesTotales, O.pendientesTotales],
+      ];
+      children.push(table([
+        new D.TableRow({ tableHeader: true, children: [P.label.toUpperCase(), 'Nº Incidencias', 'Nº OTs', 'Total'].map((h, i) =>
+          cell(h, { width: SW[i], fill: i ? ORANGE : DARK, color: 'FFFFFF', bold: true, left: i === 0 })) }),
+        ...srows.map(([l, a, b, bold], idx) => new D.TableRow({ children: [
+          cell(l, { width: SW[0], left: true, bold, fill: bold ? 'E4E7EC' : (idx % 2 ? GREY : undefined) }),
+          cell(a, { width: SW[1], bold, fill: bold ? 'E4E7EC' : (idx % 2 ? GREY : undefined) }),
+          cell(b, { width: SW[2], bold, fill: bold ? 'E4E7EC' : (idx % 2 ? GREY : undefined) }),
+          cell(a + b, { width: SW[3], bold: true, fill: bold ? 'E4E7EC' : (idx % 2 ? GREY : undefined) }),
+        ] })),
+      ], SW), spacer(160));
+      const img = (x) => {
+        if (!x) return;
+        const scale = Math.min(1, 620 / x.width);
+        children.push(para(new D.ImageRun({ type: 'png', data: x.bytes, transformation: { width: Math.round(x.width * scale), height: Math.round(x.height * scale) } }),
+          { alignment: D.AlignmentType.CENTER, spacing: { after: 160 } }));
+      };
+      children.push(h2('4.1 Casos abiertos y resueltos'));
+      img(pc.opened); img(pc.resolved);
+      children.push(h2('4.2 Estado de los casos'));
+      img(pc.status);
+      children.push(h2('4.3 Casos escalados por fabricante'));
+      img(pc.vendor);
+      children.push(h2('4.4 Casos por gestor'));
+      img(pc.gestor);
+      if (meta.period.gestorCaption) children.push(text(meta.period.gestorCaption, { italics: true, size: 17, color: '606060' }, { spacing: { after: 120 } }));
+      const GW4 = [CONTENT_W - 3 * 1400, 1400, 1400, 1400];
+      const tot = P.gestores.reduce((a, g) => [a[0] + g.inc, a[1] + g.ot, a[2] + g.total], [0, 0, 0]);
+      children.push(table([
+        new D.TableRow({ tableHeader: true, children: ['GESTOR', 'Nº Incidencias', 'Nº OTs', 'Total'].map((h, i) =>
+          cell(h, { width: GW4[i], fill: i ? ORANGE : DARK, color: 'FFFFFF', bold: true, left: i === 0 })) }),
+        ...P.gestores.map((g, idx) => new D.TableRow({ children: [
+          cell(g.gestor, { width: GW4[0], left: true, fill: idx % 2 ? GREY : undefined, color: g.unidentified ? '606060' : undefined }),
+          cell(g.inc, { width: GW4[1], fill: idx % 2 ? GREY : undefined }),
+          cell(g.ot, { width: GW4[2], fill: idx % 2 ? GREY : undefined }),
+          cell(g.total, { width: GW4[3], bold: true, fill: idx % 2 ? GREY : undefined }),
+        ] })),
+        new D.TableRow({ children: ['TOTAL', ...tot].map((v, i) => cell(v, { width: GW4[i], bold: true, left: i === 0, fill: 'E4E7EC' })) }),
+      ], GW4));
+      children.push(text('El gestor se obtiene de la acción actual (GESTOR - PROBLEMA - TÉCNICO); los casos sin gestor en la acción aparecen como “Sin gestor identificado”. El total coincide con los casos abiertos en el periodo.',
+        { italics: true, size: 17, color: '606060' }, { spacing: { before: 80 } }));
+    }
 
     const footer = new D.Footer({
       children: [para([

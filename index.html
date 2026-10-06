@@ -172,6 +172,7 @@
         <button role="tab" class="tab" data-tab="gestor" aria-selected="false">Cases by gestor</button>
         <button role="tab" class="tab" data-tab="pending" aria-selected="false">Unresolved cases</button>
         <button role="tab" class="tab" data-tab="monthly" aria-selected="false">Charts</button>
+        <button role="tab" class="tab" data-tab="period" aria-selected="false">Month / Year</button>
         <button role="tab" class="tab" data-tab="data" aria-selected="false">Extracted data</button>
       </nav>
 
@@ -234,6 +235,31 @@
           <figure class="chart-card"><figcaption>3.3.3 Casos escalados por fabricante</figcaption><div class="chart-box"><canvas id="chEscVendor"></canvas></div></figure>
           <figure class="chart-card"><figcaption>3.4 Estado de los casos</figcaption><div class="chart-box"><canvas id="chStatus"></canvas></div></figure>
         </div>
+      </div>
+
+      <div class="tab-panel card" data-panel="period" hidden>
+        <h3>Month / Year summary <span class="muted small">(all incidencias + OTs created in the period)</span></h3>
+        <div class="toolbar wrap">
+          <label class="inline-label" for="pYear">Year</label>
+          <select id="pYear" aria-label="Year"></select>
+          <label class="inline-label" for="pMonth">Month</label>
+          <select id="pMonth" aria-label="Month"></select>
+          <label class="inline-check"><input id="pInWord" type="checkbox" checked> Include in the Word report (section 4)</label>
+        </div>
+        <p class="month-note" id="pNote"></p>
+        <div id="pChecks" class="checks small-checks"></div>
+        <div class="table-wrap" id="pSummary"></div>
+        <div class="charts">
+          <figure class="chart-card"><figcaption>Casos abiertos (prioridad)</figcaption><div class="chart-box"><canvas id="pchOpened"></canvas></div></figure>
+          <figure class="chart-card"><figcaption>Casos resueltos en el periodo (prioridad)</figcaption><div class="chart-box"><canvas id="pchResolved"></canvas></div></figure>
+          <figure class="chart-card"><figcaption>Estado de los casos abiertos</figcaption><div class="chart-box"><canvas id="pchStatus"></canvas></div></figure>
+          <figure class="chart-card"><figcaption>Casos escalados por fabricante</figcaption><div class="chart-box"><canvas id="pchVendor"></canvas></div></figure>
+        </div>
+        <div class="charts single" style="margin-top:16px">
+          <figure class="chart-card"><figcaption>Casos por gestor (top 15) — Incidencias y OTs</figcaption><div class="chart-box tall"><canvas id="pchGestor"></canvas></div><p class="muted small" id="pGestorCaption" style="margin:8px 0 0"></p></figure>
+        </div>
+        <h3>Casos por gestor</h3>
+        <div class="table-wrap" id="pGestor"></div>
       </div>
 
       <div class="tab-panel card" data-panel="data" hidden>

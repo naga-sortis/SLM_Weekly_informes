@@ -172,3 +172,44 @@ test('A week spanning two months is reconciled with the monthly charts', () => {
   assert.match(r.monthLabels[r.monthLabels.length - 1], /^2026-10 \(hasta 04\/10\)$/);
   assert.match(C.weekSplitText(r), /5 casos nuevos.*2 en septiembre.*3 en octubre/);
 });
+
+test('Month / year view: all incidencias + OTs of the period', () => {
+  const ex = C.extractTickets([sheet([
+    ticket('M1', [2026, 7, 3], { status: 'Closed', restored: [2026, 8, 4, 9] }),
+    ticket('M2', [2026, 7, 10], { type: 'Work order' }),
+    ticket('M3', [2026, 7, 20], { ref: 'H-1', action: 'NFMT - x - Julio' }),
+    ticket('M4', [2026, 7, 31], { action: 'DEVUELTO', status: 'Closed' }),
+    ticket('J1', [2026, 6, 30], { status: 'Resolved', restored: [2026, 8, 2, 9] }), // July ticket resolved in August
+    ticket('S1', [2026, 8, 1]),
+    ticket('Y1', [2025, 7, 15], { type: 'Work order' }),
+  ])]);
+  const aug = C.computePeriod(ex.tickets, { year: 2026, month: 8, slmGroups: [] });
+  assert.ok(aug.checks.every((c) => c.ok), JSON.stringify(aug.checks.filter((c) => !c.ok)));
+  assert.equal(aug.label, 'Agosto 2026');
+  assert.deepEqual([aug.summary.INC.abiertos, aug.summary.OT.abiertos], [3, 1]);
+  assert.deepEqual([aug.summary.INC.resueltos, aug.summary.INC.pendientes, aug.summary.INC.devueltos], [1, 1, 1]);
+  assert.equal(aug.summary.INC.escalados, 1);
+  assert.equal(aug.summary.INC.resueltosEnPeriodo, 2); // M1 + J1 (opened in July)
+  assert.equal(aug.buckets[0].label, 'sem. 31 (01–02/08)'); // week clipped to the month
+  assert.ok(aug.gestores.some((g) => g.gestor === 'NFMT' && g.inc === 1));
+
+  const y2026 = C.computePeriod(ex.tickets, { year: 2026, month: null, slmGroups: [] });
+  assert.ok(y2026.checks.every((c) => c.ok));
+  assert.equal(y2026.label, 'Año 2026');
+  assert.equal(y2026.summary.INC.abiertos + y2026.summary.OT.abiertos, 6);
+  assert.equal(y2026.buckets.length, 9); // Jan..Sep (no empty future months after the last data)
+  const y2025 = C.computePeriod(ex.tickets, { year: 2025, month: null, slmGroups: [] });
+  assert.deepEqual([y2025.summary.INC.abiertos, y2025.summary.OT.abiertos], [0, 1]);
+  assert.deepEqual(C.periodsAvailable(ex.tickets).map((p) => p.year), [2026, 2025]);
+});
+
+test('Word builder accepts the month / year section', () => {
+  let D;
+  try { D = require('docx'); } catch (e) { return; } // docx is only vendored for the browser
+  const ex = C.extractTickets([sheet([ticket('A', [2026, 8, 21]), ticket('B', [2026, 8, 22], { type: 'Work order' })])]);
+  const r = C.computeReport(ex.tickets, { weeks: [C.weekFromKey(202639)], slmGroups: [] });
+  const p = C.computePeriod(ex.tickets, { year: 2026, month: 9, slmGroups: [] });
+  const R = require('../assets/js/docx-report.js');
+  const doc = R.buildDocument(D, C, r, { title: 'T', period: { data: p, note: 'n' } }, {});
+  assert.ok(doc);
+});

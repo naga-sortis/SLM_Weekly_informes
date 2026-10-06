@@ -39,6 +39,16 @@ Everything runs **in the browser**: the Excel file is never uploaded anywhere. A
 * **Cut-off**: nothing created or resolved after the end of the report week is counted, including in the monthly charts. A past week therefore always gives the same figures.
 * Week, month and year are recalculated from the creation date (ISO weeks), and the file's own columns are cross-checked against them.
 
+## Month / Year view
+
+The **Month / Year** tab filters all incidencias + OTs created in a calendar month or a whole year. It works independently of the report week. It shows:
+
+* a summary table: opened, resolved, pending at the close, returned, escalated, opened by the SLM, resolved during the period, total pending;
+* charts per month (for a year) or per week of the month (weeks are trimmed to the month's days): cases opened and resolved by priority, status, and escalations by vendor;
+* cases by gestor (top 15 chart plus the full table, with incidencias and OTs).
+
+With “Include in the Word report” ticked, this becomes **section 4** of the Word document. It has its own consistency checks (independent recount from the creation date, opened = resolved + pending + returned, charts and gestor table adding up). If any check fails, the export is blocked.
+
 ## Consistency checks
 
 Every report is verified before it can be exported:

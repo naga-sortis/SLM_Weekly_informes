@@ -108,11 +108,11 @@
       const next = isDark() ? 'light' : 'dark';
       document.documentElement.setAttribute('data-theme', next);
       try { localStorage.setItem('slm-theme', next); } catch (e) { /* ignore */ }
-      if (state.report) renderCharts();
+      if (state.report) { renderCharts(); renderPeriodCharts(); }
     });
     if (window.matchMedia) {
       const mq = window.matchMedia('(prefers-color-scheme: dark)');
-      const onChange = () => { if (state.report && !document.documentElement.getAttribute('data-theme')) renderCharts(); };
+      const onChange = () => { if (state.report && !document.documentElement.getAttribute('data-theme')) { renderCharts(); renderPeriodCharts(); } };
       if (mq.addEventListener) mq.addEventListener('change', onChange);
     }
   }
@@ -214,6 +214,7 @@
     $('#results').hidden = false;
     $('#emptyState').hidden = true;
     initPeriodSelectors();
+    initPeriodFilter();
     initDataFilters();
     recompute();
   }
@@ -279,6 +280,135 @@
       dataUntil: state.summary.dataUntil,
     });
     renderAll();
+    recomputePeriod();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Month / Year view                                                   */
+  /* ------------------------------------------------------------------ */
+
+  function initPeriodFilter() {
+    state.periodsAvail = C.periodsAvailable(state.tickets);
+    $('#pYear').replaceChildren(...state.periodsAvail.map((p) => el('option', { value: p.year, text: p.year })));
+    const latest = state.periodsAvail[0];
+    $('#pYear').value = String(latest.year);
+    fillPeriodMonths(latest.months[latest.months.length - 1]);
+  }
+
+  function fillPeriodMonths(selected) {
+    const y = Number($('#pYear').value);
+    const entry = state.periodsAvail.find((p) => p.year === y);
+    const months = entry ? entry.months : [];
+    $('#pMonth').replaceChildren(el('option', { value: '', text: `Todo el año ${y}` }),
+      ...months.map((m) => el('option', { value: m, text: C.MONTHS_ES[m - 1] })));
+    $('#pMonth').value = selected && months.includes(selected) ? String(selected) : '';
+  }
+
+  function initPeriodControls() {
+    $('#pYear').addEventListener('change', () => {
+      const prev = Number($('#pMonth').value) || null;
+      fillPeriodMonths(prev);
+      recomputePeriod();
+    });
+    $('#pMonth').addEventListener('change', recomputePeriod);
+    $('#pInWord').addEventListener('change', updateWordButton);
+  }
+
+  function recomputePeriod() {
+    if (!state.tickets.length || !$('#pYear').value) return;
+    state.period = C.computePeriod(state.tickets, {
+      year: Number($('#pYear').value),
+      month: Number($('#pMonth').value) || null,
+      slmGroups: slmGroups(),
+      inferGestor: $('#inferGestor').checked,
+      dataUntil: state.summary.dataUntil,
+    });
+    renderPeriodView();
+    updateWordButton();
+  }
+
+  function renderPeriodView() {
+    const p = state.period;
+    const I = p.summary.INC, O = p.summary.OT;
+    $('#pNote').textContent = periodNote(p);
+    const failed = p.checks.filter((c) => !c.ok);
+    const box = $('#pChecks');
+    box.className = `checks small-checks${failed.length ? ' fail' : ''}`;
+    box.replaceChildren(el('div', { class: 'checks-head', text: failed.length
+      ? `✖ ${failed.length} of ${p.checks.length} checks failed for ${p.label}: ${failed.map((c) => c.label + (c.detail ? ' — ' + c.detail : '')).join(' · ')}`
+      : `✔ All ${p.checks.length} consistency checks passed for ${p.label}` }));
+    const rows = [
+      ['Casos abiertos en el periodo', I.abiertos, O.abiertos],
+      ['  · Resueltos', I.resueltos, O.resueltos],
+      ['  · Pendientes al cierre', I.pendientes, O.pendientes],
+      ['  · Devueltos', I.devueltos, O.devueltos],
+      ['Escalados (Ericsson / Huawei / Nokia)', I.escalados, O.escalados],
+      ['Abiertos por el SLM', I.abiertosSLM, O.abiertosSLM],
+      ['Resueltos durante el periodo (incl. abiertos antes)', I.resueltosEnPeriodo, O.resueltosEnPeriodo],
+      ['Pendientes totales al cierre (incl. backlog)', I.pendientesTotales, O.pendientesTotales],
+    ];
+    $('#pSummary').replaceChildren(el('table', { class: 'rep compact' },
+      el('thead', null, el('tr', { class: 'weeks' }, el('th', { text: p.label.toUpperCase() }), el('th', { text: 'Incidencias' }), el('th', { text: 'OTs' }), el('th', { text: 'Total' }))),
+      el('tbody', null, rows.map(([l, a, b], i) => el('tr', { class: i === 0 ? 'total' : null },
+        el('td', { text: l, style: l.startsWith('  ') ? 'padding-left:22px' : null }),
+        el('td', { class: a === 0 ? 'zero' : null, text: a }), el('td', { class: b === 0 ? 'zero' : null, text: b }),
+        el('td', { text: a + b, style: 'font-weight:600' }))))));
+    const tot = p.gestores.reduce((a, g) => [a[0] + g.inc, a[1] + g.ot, a[2] + g.total], [0, 0, 0]);
+    $('#pGestor').replaceChildren(p.gestores.length ? el('table', { class: 'rep compact' },
+      el('thead', null, el('tr', { class: 'weeks' }, el('th', { text: 'GESTOR' }), el('th', { text: 'Incidencias' }), el('th', { text: 'OTs' }), el('th', { text: 'Total' }))),
+      el('tbody', null,
+        p.gestores.map((g) => el('tr', { class: g.unidentified ? 'unidentified' : null },
+          el('td', { text: g.gestor }), el('td', { class: g.inc ? null : 'zero', text: g.inc }), el('td', { class: g.ot ? null : 'zero', text: g.ot }),
+          el('td', { text: g.total, style: 'font-weight:600' }))),
+        el('tr', { class: 'total' }, el('td', { text: 'TOTAL' }), tot.map((v) => el('td', { text: v })))))
+      : el('p', { class: 'muted', text: 'No cases in this period.' }));
+    renderPeriodCharts();
+  }
+
+  function periodNote(p) {
+    const I = p.summary.INC, O = p.summary.OT;
+    let t = `${p.label}: ${I.abiertos + O.abiertos} casos abiertos (${I.abiertos} incidencias y ${O.abiertos} OTs), del ${C.fmtDate(p.start)} al ${C.fmtDate(p.end - 86400000)}.`;
+    if (p.partial) t += ` El periodo no ha terminado: datos hasta el ${C.fmtDateTime(p.asOf)}.`;
+    t += p.month ? ' Las semanas del mes se recortan a los días del mes.' : '';
+    return t;
+  }
+
+  function gestorCaption(p) {
+    const g = p.gestorChart;
+    const parts = [`Los ${g.labels.length} gestores con más casos`];
+    if (g.othersCount) parts.push(`otros ${g.othersCount} gestores suman ${g.othersTotal} casos`);
+    if (g.unidentifiedTotal) parts.push(`${g.unidentifiedTotal} casos sin gestor en la acción actual`);
+    return parts.join('; ') + ' (detalle completo en la tabla).';
+  }
+
+  const PERIOD_CHARTS = [
+    ['pchOpened', 'opened', false],
+    ['pchResolved', 'resolved', false],
+    ['pchStatus', 'status', true],
+    ['pchVendor', 'vendor', false],
+  ];
+
+  function renderPeriodCharts() {
+    if (!state.period) return;
+    if (document.querySelector('[data-panel="period"]').hidden) { state.periodChartsDirty = true; return; }
+    state.periodChartsDirty = false;
+    const p = state.period;
+    const labels = p.buckets.map((b) => b.label);
+    for (const [id, key, split] of PERIOD_CHARTS) {
+      if (state.charts[id]) state.charts[id].destroy();
+      state.charts[id] = new Chart(document.getElementById(id), CH.barConfig(labels, p.series[key], { dark: isDark(), splitStacks: split }));
+    }
+    $('#pGestorCaption').textContent = gestorCaption(p);
+    if (state.charts.pchGestor) state.charts.pchGestor.destroy();
+    state.charts.pchGestor = new Chart(document.getElementById('pchGestor'),
+      CH.barConfig(p.gestorChart.labels, p.gestorChart.series, { dark: isDark(), horizontal: true }));
+  }
+
+  function updateWordButton() {
+    const weeklyFail = state.report && state.report.checks.some((c) => !c.ok);
+    const periodFail = $('#pInWord').checked && state.period && state.period.checks.some((c) => !c.ok);
+    $('#btnWord').disabled = !!(weeklyFail || periodFail);
+    $('#btnWord').title = weeklyFail || periodFail ? 'Blocked: the report did not pass the consistency checks' : '';
   }
 
   /* ------------------------------------------------------------------ */
@@ -321,8 +451,7 @@
       el('span', { class: 'ic', text: c.ok ? '✔' : '✖' }),
       el('span', null, c.label, c.detail ? el('span', { class: 'det', text: ` — ${c.detail}` }) : null))));
     if (failed.length) { $('#checksList').hidden = false; $('#checksToggle').setAttribute('aria-expanded', 'true'); }
-    $('#btnWord').disabled = failed.length > 0;
-    $('#btnWord').title = failed.length ? 'Blocked: the report did not pass the consistency checks' : '';
+    updateWordButton();
   }
 
   function renderKpis() {
@@ -523,6 +652,7 @@
       });
       $$('.tab-panel').forEach((p) => { p.hidden = p.dataset.panel !== tab.dataset.tab; });
       if (tab.dataset.tab === 'monthly' && state.report && (state.chartsDirty || !state.charts.chOpened)) renderCharts();
+      if (tab.dataset.tab === 'period' && state.period && (state.periodChartsDirty || !state.charts.pchOpened)) renderPeriodCharts();
     };
     tabs.forEach((t, i) => {
       t.addEventListener('click', () => activate(t));
@@ -662,7 +792,8 @@
   /* ------------------------------------------------------------------ */
 
   function setBusy(busy, msg) {
-    $('#btnWord').disabled = busy || !!(state.report && state.report.checks.some((c) => !c.ok));
+    $('#btnWord').disabled = busy;
+    if (!busy) updateWordButton();
     $('#btnExcel').disabled = busy;
     $('#actionStatus').textContent = msg || '';
   }
@@ -686,6 +817,8 @@
   async function generateWord() {
     if (!state.report) return;
     if (state.report.checks.some((c) => !c.ok)) { toast('The report did not pass the consistency checks — see the list above.', true); return; }
+    const includePeriod = $('#pInWord').checked && state.period && state.period.hasData;
+    if (includePeriod && state.period.checks.some((c) => !c.ok)) { toast('The Month / Year section did not pass its consistency checks.', true); return; }
     setBusy(true, 'Building the Word report…');
     await nextFrame();
     try {
@@ -714,6 +847,20 @@
         bar: CH.renderPng(CH.barConfig(weeklyLabels(r), weeklySeries(r), { static: true, title: `Casos nuevos por semana (semanas ${r.weeks[0].week}–${r.reportWeek.week})` }), 1000, 420),
         pie: null,
       };
+      let periodCharts = null;
+      if (includePeriod) {
+        const p = state.period;
+        const pl = p.buckets.map((b) => b.label);
+        periodCharts = {
+          opened: CH.renderPng(CH.barConfig(pl, p.series.opened, { static: true, title: `Casos abiertos — ${p.label}` }), 1000, 440),
+          resolved: CH.renderPng(CH.barConfig(pl, p.series.resolved, { static: true, title: `Casos resueltos — ${p.label}` }), 1000, 440),
+          status: CH.renderPng(CH.barConfig(pl, p.series.status, { static: true, splitStacks: true, title: `Estado de los casos abiertos — ${p.label}` }), 1000, 440),
+          vendor: CH.renderPng(CH.barConfig(pl, p.series.vendor, { static: true, title: `Casos escalados por fabricante — ${p.label}` }), 1000, 400),
+          gestor: p.gestorChart.labels.length ? CH.renderPng(CH.barConfig(p.gestorChart.labels, p.gestorChart.series,
+            { static: true, horizontal: true, title: `Casos por gestor (top 15) — ${p.label}` }), 1000, Math.max(320, 70 + p.gestorChart.labels.length * 34)) : null,
+        };
+        await nextFrame();
+      }
       const logo = $('#includeLogo').checked ? await loadLogo() : null;
       const groups = slmGroups();
       const revDate = $('#revDate').value ? $('#revDate').value.split('-').reverse().join('.') : '';
@@ -734,7 +881,8 @@
         queueOt: groups[1] || 'XSP00027',
         dataUntil: state.summary.dataUntil,
       };
-      const doc = SLMDocx.buildDocument(window.docx, C, r, meta, { logo, charts });
+      if (includePeriod) meta.period = { data: state.period, note: periodNote(state.period), gestorCaption: gestorCaption(state.period) };
+      const doc = SLMDocx.buildDocument(window.docx, C, r, meta, { logo, charts, periodCharts });
       const blob = await docx.Packer.toBlob(doc);
       const name = `INFORME-SLM-OSS-Sortis-${r.reportWeek.year}-Semana${String(r.reportWeek.week).padStart(2, '0')}-${safeFilePart(r.periodLabel.replace(/ \/ /g, '-'))}.docx`;
       downloadBlob(blob, name);
@@ -847,6 +995,7 @@
     initTabs();
     initPendingFilter();
     initDataTable();
+    initPeriodControls();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

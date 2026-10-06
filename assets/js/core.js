@@ -899,6 +899,185 @@
     return keys.map((k) => ({ name: k, data: data[k] }));
   }
 
+  /* ------------------------------------------------------------------ */
+  /* Month / year view                                                   */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * All incidencias + OTs of a calendar month (month 1–12) or a whole year (month = null).
+   * Buckets: the months of the year, or the (clipped) ISO weeks of the month.
+   * Situation (resolved / pending / status) is evaluated at the end of the period,
+   * or at the last data in the file if the period is not over yet.
+   */
+  function computePeriod(tickets, options) {
+    const year = Number(options.year);
+    const month = options.month ? Number(options.month) : null;
+    const slmGroups = new Set((options.slmGroups || []).map((g) => g.trim().toUpperCase()).filter(Boolean));
+    const NO_GESTOR = 'Sin gestor identificado';
+    const inferGestor = !!options.inferGestor;
+    const gOf = (t) => t.gestor || (inferGestor ? t.gestorDesc : '') || '';
+    let dataUntil = options.dataUntil ?? null;
+    if (dataUntil === null) for (const t of tickets) dataUntil = Math.max(dataUntil ?? -Infinity, t.created, t.restored ?? -Infinity);
+
+    const start = month ? Date.UTC(year, month - 1, 1) : Date.UTC(year, 0, 1);
+    const end = month ? Date.UTC(month === 12 ? year + 1 : year, month === 12 ? 0 : month, 1) : Date.UTC(year + 1, 0, 1);
+    const asOf = dataUntil === null ? end - 1000 : Math.min(end - 1000, dataUntil);
+    const partial = dataUntil !== null && dataUntil < end - 1000;
+    const label = month ? monthLabel(year * 100 + month) : `Año ${year}`;
+
+    // Buckets
+    const buckets = [];
+    if (month) {
+      let d = start;
+      while (d < end) {
+        const info = isoWeekInfo(d);
+        const bEnd = Math.min(info.start + WEEK, end);
+        if (dataUntil !== null && d > dataUntil && buckets.length) break; // no empty future weeks
+        const shownEnd = dataUntil !== null && dataUntil < bEnd - 1000 ? dataUntil : bEnd - DAY;
+        const partialTxt = shownEnd !== bEnd - DAY ? ', parcial' : '';
+        buckets.push({ start: d, end: bEnd, label: `sem. ${info.week} (${fmtDate(d).slice(0, 2)}–${fmtDate(shownEnd).slice(0, 5)}${partialTxt})` });
+        d = bEnd;
+      }
+    } else {
+      for (let m = 0; m < 12; m++) {
+        const bs = Date.UTC(year, m, 1), be = Date.UTC(m === 11 ? year + 1 : year, m === 11 ? 0 : m + 1, 1);
+        if (dataUntil !== null && bs > dataUntil) break; // no empty future months
+        buckets.push({ start: bs, end: be, label: `${MONTHS_ES[m].slice(0, 3)} ${year}` });
+      }
+      if (!buckets.length) buckets.push({ start, end: Date.UTC(year, 1, 1), label: `${MONTHS_ES[0].slice(0, 3)} ${year}` });
+    }
+    if (partial && !month) {
+      const lb = buckets.find((b) => asOf >= b.start && asOf < b.end);
+      if (lb && lb.end - 1000 > asOf) lb.label += ` (hasta ${fmtDate(asOf).slice(0, 5)})`;
+    }
+    const bucketOf = (ms) => {
+      for (let i = 0; i < buckets.length; i++) if (ms >= buckets[i].start && ms < buckets[i].end) return i;
+      return -1;
+    };
+
+    const opened = tickets.filter((t) => t.created >= start && t.created < end);
+    const summary = {};
+    for (const cat of ['INC', 'OT']) {
+      const list = opened.filter((t) => t.category === cat);
+      const dev = list.filter((t) => t.devuelto);
+      const rest = list.filter((t) => !t.devuelto);
+      summary[cat] = {
+        abiertos: list.length,
+        resueltos: rest.filter((t) => resolvedBefore(t, end)).length,
+        pendientes: rest.filter((t) => !resolvedBefore(t, end)).length,
+        devueltos: dev.length,
+        escalados: list.filter((t) => t.escalated).length,
+        abiertosSLM: list.filter((t) => slmGroups.has(t.groupId.toUpperCase())).length,
+        resueltosEnPeriodo: tickets.filter((t) => t.category === cat && !t.devuelto && t.resolvedAt !== null &&
+          t.resolvedAt >= start && t.resolvedAt < end && t.created < end).length,
+        pendientesTotales: tickets.filter((t) => t.category === cat && t.created < end && !t.devuelto && !resolvedBefore(t, end)).length,
+      };
+    }
+
+    const prioKeys = ['OTs', 'Inc. P1', 'Inc. P2', 'Inc. P3', 'Inc. P4', 'Inc. otras'];
+    const prioOf = (t) => (t.category === 'INC' ? (/^P[1-4]$/.test(t.priority) ? `Inc. ${t.priority}` : 'Inc. otras') : 'OTs');
+    const bySeries = (list, keys, keyOf, timeOf) => {
+      const data = Object.fromEntries(keys.map((k) => [k, buckets.map(() => 0)]));
+      for (const t of list) {
+        const i = bucketOf(timeOf(t));
+        const k = keyOf(t);
+        if (i >= 0 && data[k]) data[k][i]++;
+      }
+      return prune(keys, data);
+    };
+    const openedSeries = bySeries(opened, prioKeys, prioOf, (t) => t.created);
+    const resolvedList = tickets.filter((t) => !t.devuelto && t.resolvedAt !== null && t.resolvedAt >= start && t.resolvedAt < end && t.created < end);
+    const resolvedSeries = bySeries(resolvedList, prioKeys, prioOf, (t) => t.resolvedAt);
+    const statusKeys = ['Inc. Current', 'Inc. Resolved', 'Inc. Restored', 'Inc. Closed', 'Inc. Devuelto', 'OTs Current', 'OTs Cerradas', 'OTs Devueltas'];
+    const statusOf = (t) => {
+      const b = t.devuelto ? 'Devuelto' : (resolvedBefore(t, end) ? t.statusBucket : 'Current');
+      if (t.category === 'INC') return `Inc. ${b}`;
+      return b === 'Devuelto' ? 'OTs Devueltas' : (b === 'Current' ? 'OTs Current' : 'OTs Cerradas');
+    };
+    const statusSeries = bySeries(opened, statusKeys, statusOf, (t) => t.created);
+    const escalatedList = opened.filter((t) => t.escalated);
+    const vendorSeries = bySeries(escalatedList, VENDORS, (t) => t.vendor, (t) => t.created);
+
+    // Gestores (incidencias + OTs opened in the period)
+    const gm = new Map();
+    for (const t of opened) {
+      const g = gOf(t) || NO_GESTOR;
+      if (!gm.has(g)) gm.set(g, { gestor: g, inc: 0, ot: 0, total: 0, unidentified: g === NO_GESTOR });
+      const row = gm.get(g);
+      if (t.category === 'INC') row.inc++; else row.ot++;
+      row.total++;
+    }
+    const gestores = Array.from(gm.values())
+      .sort((a, b) => (a.unidentified - b.unidentified) || b.total - a.total || a.gestor.localeCompare(b.gestor, 'es'));
+    const named = gestores.filter((g) => !g.unidentified);
+    const TOP = 15;
+    const top = named.slice(0, TOP);
+    const rest = named.slice(TOP);
+    // Top 15 only (an "Otros" bar would dwarf them); the rest is stated in the caption and in the table.
+    const gestorChart = {
+      labels: top.map((g) => g.gestor),
+      series: [
+        { name: 'Incidencias', data: top.map((g) => g.inc) },
+        { name: 'OTs', data: top.map((g) => g.ot) },
+      ],
+      othersCount: rest.length,
+      othersTotal: rest.reduce((a, g) => a + g.total, 0),
+      unidentifiedTotal: (gestores.find((g) => g.unidentified) || { total: 0 }).total,
+    };
+
+    const p = {
+      year, month, label, start, end, asOf, partial, dataUntil,
+      buckets, summary,
+      series: { opened: openedSeries, resolved: resolvedSeries, status: statusSeries, vendor: vendorSeries },
+      gestores, gestorChart,
+      hasData: opened.length > 0,
+    };
+    p.checks = validatePeriod(p, tickets);
+    return p;
+  }
+
+  function validatePeriod(p, tickets) {
+    const checks = [];
+    const add = (ok, label, detail) => checks.push({ ok: !!ok, label, detail: ok ? '' : detail });
+    const sumSeries = (series) => series.reduce((a, s) => a + s.data.reduce((x, y) => x + y, 0), 0);
+    const I = p.summary.INC, O = p.summary.OT;
+    const total = I.abiertos + O.abiertos;
+    // Independent recount from the creation date's calendar month/year
+    const direct = tickets.filter((t) => t.year === p.year && (!p.month || t.month === p.month));
+    add(direct.length === total, `${p.label}: opened cases = tickets whose creation date is in the period`, `Summary has ${total}, data has ${direct.length}.`);
+    add(direct.filter((t) => t.category === 'INC').length === I.abiertos, `${p.label}: incidencias + OTs split matches the ticket type`, 'Incidencias count differs.');
+    for (const [name, x] of [['Incidencias', I], ['OTs', O]]) {
+      add(x.abiertos === x.resueltos + x.pendientes + x.devueltos, `${name}: Abiertos = Resueltos + Pendientes + Devueltos`,
+        `${x.abiertos} ≠ ${x.resueltos} + ${x.pendientes} + ${x.devueltos}.`);
+    }
+    add(sumSeries(p.series.opened) === total, 'Opened chart covers every case of the period exactly once', `Chart ${sumSeries(p.series.opened)} vs ${total}.`);
+    add(sumSeries(p.series.status) === total, 'Status chart covers every case of the period exactly once', `Chart ${sumSeries(p.series.status)} vs ${total}.`);
+    add(sumSeries(p.series.resolved) === I.resueltosEnPeriodo + O.resueltosEnPeriodo, 'Resolved chart = cases resolved during the period',
+      `Chart ${sumSeries(p.series.resolved)} vs ${I.resueltosEnPeriodo + O.resueltosEnPeriodo}.`);
+    add(sumSeries(p.series.vendor) === I.escalados + O.escalados, 'Vendor chart = escalated cases of the period',
+      `Chart ${sumSeries(p.series.vendor)} vs ${I.escalados + O.escalados}.`);
+    const gi = p.gestores.reduce((a, g) => a + g.inc, 0), go = p.gestores.reduce((a, g) => a + g.ot, 0);
+    add(gi === I.abiertos && go === O.abiertos, 'Cases by gestor add up to the opened incidencias and OTs', `Gestor table ${gi}/${go} vs ${I.abiertos}/${O.abiertos}.`);
+    const keys = new Set(p.gestores.map((g) => gestorKey(g.gestor)));
+    add(keys.size === p.gestores.length, 'Each gestor appears only once', 'Repeated gestor rows.');
+    const gc = p.gestorChart.series.reduce((a, s) => a + s.data.reduce((x, y) => x + y, 0), 0);
+    const named = p.gestores.filter((g) => !g.unidentified).reduce((a, g) => a + g.total, 0);
+    add(gc + p.gestorChart.othersTotal === named, 'Gestor chart (top 15) + other gestores = all cases with a gestor',
+      `Chart ${gc} + others ${p.gestorChart.othersTotal} vs ${named}.`);
+    return checks;
+  }
+
+  /** Years and months available in the data, for the month/year filter. */
+  function periodsAvailable(tickets) {
+    const years = new Map();
+    for (const t of tickets) {
+      if (!years.has(t.year)) years.set(t.year, new Set());
+      years.get(t.year).add(t.month);
+    }
+    return Array.from(years.entries()).sort((a, b) => b[0] - a[0])
+      .map(([year, ms]) => ({ year, months: Array.from(ms).sort((a, b) => a - b) }));
+  }
+
   /** Spanish sentence reconciling the report week with the monthly charts. */
   function weekSplitText(r) {
     const w = r.reportWeek;
@@ -949,6 +1128,6 @@
     isoWeekInfo, weekFromKey, weekRange, weeksOfMonth, weeksInIsoYear, nextWeekKey,
     monthKeyOf, monthLabel, monthShort, monthsEndingAt, prevMonthKey, nextMonthKey,
     fmtDateTime, fmtDate, toExcelSerial,
-    computeReport, summarize, weeklyForCategory, validateReport, gestorKey, periodMonthsLabel, buildGestorMatcher, weekSplitText,
+    computeReport, summarize, weeklyForCategory, validateReport, gestorKey, periodMonthsLabel, buildGestorMatcher, weekSplitText, computePeriod, validatePeriod, periodsAvailable,
   };
 });

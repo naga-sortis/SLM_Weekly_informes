@@ -60,20 +60,24 @@
         maintainAspectRatio: false,
         animation: opts.static ? false : { duration: 300 },
         devicePixelRatio: opts.static ? 2 : undefined,
-        interaction: { mode: 'index', intersect: false },
+        indexAxis: opts.horizontal ? 'y' : 'x',
+        interaction: { mode: 'index', intersect: false, axis: opts.horizontal ? 'y' : 'x' },
         plugins: {
           legend: { position: 'bottom', labels: { color: text, boxWidth: 12, boxHeight: 12, padding: 12, font: { size: opts.static ? 13 : 12 } } },
           title: opts.title ? { display: true, text: opts.title, color: text, font: { size: 15, weight: '600' }, padding: { bottom: 12 } } : { display: false },
           tooltip: {
             callbacks: {
               footer: (items) => {
-                const sum = items.reduce((a, it) => a + (it.parsed.y || 0), 0);
+                const sum = items.reduce((a, it) => a + ((opts.horizontal ? it.parsed.x : it.parsed.y) || 0), 0);
                 return items.length > 1 ? `Total: ${sum}` : '';
               },
             },
           },
         },
-        scales: {
+        scales: opts.horizontal ? {
+          y: { stacked: true, ticks: { color: text, autoSkip: false, font: { size: opts.static ? 12 : 11 } }, grid: { display: false } },
+          x: { stacked: true, beginAtZero: true, ticks: { color: text, precision: 0, font: { size: opts.static ? 13 : 12 } }, grid: { color: grid } },
+        } : {
           x: { stacked: true, ticks: { color: text, font: { size: opts.static ? 13 : 12 } }, grid: { display: false } },
           y: { stacked: true, beginAtZero: true, ticks: { color: text, precision: 0, font: { size: opts.static ? 13 : 12 } }, grid: { color: grid } },
         },
