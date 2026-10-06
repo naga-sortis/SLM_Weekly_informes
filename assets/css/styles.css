@@ -364,3 +364,35 @@ table.rep tr.unidentified td { font-style: italic; color: var(--muted); }
 .small-checks:empty { display: none; }
 .small-checks .checks-head { cursor: default; }
 table.rep.compact td:first-child, table.rep.compact th:first-child { min-width: 220px; }
+
+/* Numbers under each chart */
+.chart-table { margin-top: 10px; overflow-x: auto; }
+.chart-table table { border-collapse: collapse; width: 100%; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.chart-table th, .chart-table td { border: 1px solid var(--border); padding: 3px 6px; text-align: center; white-space: nowrap; }
+.chart-table th { background: var(--surface-2); font-weight: 600; }
+.chart-table td:first-child, .chart-table th:first-child { text-align: left; }
+.chart-table .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.chart-table tr.subtotal td { font-weight: 600; background: var(--row-alt); }
+.chart-table tr.total td { font-weight: 700; background: var(--surface-2); }
+.chart-table td.zero { color: var(--muted); }
+
+/* Sin gestor identificado panel */
+.nogestor { margin-top: 18px; border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.nogestor:empty { display: none; }
+.nogestor h4 { font-size: 14px; margin: 0 0 4px; }
+.nogestor .ng-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.chip { font: inherit; font-size: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 999px; padding: 4px 10px; cursor: pointer; }
+.chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chip b { margin-left: 4px; }
+.nogestor .data-wrap { max-height: 520px; }
+.nogestor td.reason { white-space: normal; min-width: 220px; }
+.nogestor td.desc { max-width: 360px; }
+.nogestor .empty-val { font-style: italic; color: var(--muted); }
+.nogestor .ok-note { color: var(--ok); font-size: 12.5px; margin: 0 0 8px; }
+.nogestor .more { margin-top: 8px; }
+table.rep tr.unidentified td:first-child { cursor: pointer; text-decoration: underline dotted; }
+.chart-table table { table-layout: auto; }
+.chart-table th { white-space: normal; line-height: 1.2; font-size: 11px; }
+.chart-table td, .chart-table th { padding: 3px 4px; }
+.chart-table td:first-child { white-space: nowrap; }

@@ -213,3 +213,37 @@ test('Word builder accepts the month / year section', () => {
   const doc = R.buildDocument(D, C, r, { title: 'T', period: { data: p, note: 'n' } }, {});
   assert.ok(doc);
 });
+
+test('“Sin gestor identificado” lists every ticket with the reason', () => {
+  const ex = C.extractTickets([sheet([
+    ticket('G1', [2026, 8, 21], { action: 'NM RM - BACKUP - Leticia' }),
+    ticket('N1', [2026, 8, 21], { action: 'JR - Trabajando' }),
+    ticket('N2', [2026, 8, 22], { action: '' }),
+    ticket('N3', [2026, 8, 22], { action: 'DEVUELTO', status: 'Closed' }),
+    ticket('N4', [2026, 8, 23], { action: 'Cerrado', status: 'Closed' }),
+    ticket('O1', [2026, 8, 23], { type: 'Work order', action: 'IG - Trabajando' }),
+  ])]);
+  const r = C.computeReport(ex.tickets, { weeks: [C.weekFromKey(202639)], slmGroups: [] });
+  assert.ok(r.checks.every((c) => c.ok), JSON.stringify(r.checks.filter((c) => !c.ok)));
+  assert.deepEqual(r.noGestorTickets.map((t) => t.id).sort(), ['N1', 'N2', 'N3', 'N4']); // weekly 2.2 = incidencias only
+  const reasons = Object.fromEntries(r.noGestorTickets.map((t) => [t.id, C.noGestorReason(t).code]));
+  assert.deepEqual(reasons, { N1: 'trabajando', N2: 'empty', N3: 'devuelto', N4: 'cerrado' });
+  const p = C.computePeriod(ex.tickets, { year: 2026, month: 9, slmGroups: [] });
+  assert.ok(p.checks.every((c) => c.ok));
+  assert.equal(p.noGestorTickets.length, 5); // incidencias + OTs
+  assert.ok(p.noGestorTickets.every((t) => C.noGestorReason(t).label.length > 10));
+});
+
+test('Numbers under each chart: series, subtotals and totals', () => {
+  const CH = require('../assets/js/charts.js').SLMCharts;
+  const t = CH.chartTable(['Ago', 'Sep'], [
+    { name: 'OTs', data: [5, 7] }, { name: 'Inc. P2', data: [1, 0] }, { name: 'Inc. P3', data: [3, 4] },
+  ]);
+  const byName = Object.fromEntries(t.rows.map((r) => [r.name, r]));
+  assert.deepEqual(byName['Total incidencias'].data, [4, 4]);
+  assert.deepEqual(byName['Total OTs'].data, [5, 7]);
+  assert.deepEqual(byName.Total.data, [9, 11]);
+  assert.equal(byName.Total.total, 20);
+  const w = CH.chartTable(['s1'], [{ name: 'Incidencias', data: [3] }, { name: 'OTs', data: [2] }]);
+  assert.deepEqual(w.rows.map((r) => r.name), ['Incidencias', 'OTs', 'Total']);
+});

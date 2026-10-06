@@ -49,6 +49,22 @@ The **Month / Year** tab filters all incidencias + OTs created in a calendar mon
 
 With “Include in the Word report” ticked, this becomes **section 4** of the Word document. It has its own consistency checks (independent recount from the creation date, opened = resolved + pending + returned, charts and gestor table adding up). If any check fails, the export is blocked.
 
+## Tickets without gestor
+
+On the *Cases by gestor* and *Month / Year* tabs, a **Sin gestor identificado** panel lists every ticket counted in that row: its Ticket ID, date, type, status and Current action exactly as written in the Excel. Each ticket also shows the **reason** it has no gestor:
+
+* action empty;
+* technician / work status (e.g. `JR - Trabajando`);
+* `DEVUELTO`;
+* `Cerrado`;
+* format not recognised.
+
+The panel also shows any gestor mentioned in the description, as a hint. You can filter by reason, search, and export the list to Excel. Only “format not recognised” would point to a reading problem in the tool, and the panel says explicitly whether there are any.
+
+## Numbers on the charts
+
+Every bar shows its total. Under each chart's legend there is a table with the number of cases per series (OTs, Inc. P1–P4, statuses, vendors…), *Total incidencias* / *Total OTs* subtotals and a *Total* row. The same tables appear under each chart in the Word report.
+
 ## Consistency checks
 
 Every report is verified before it can be exported:

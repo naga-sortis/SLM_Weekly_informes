@@ -686,6 +686,9 @@
         gestorMap.get(g)[i]++;
       }
     });
+    const noGestorTickets = scope
+      .filter((t) => t.category === 'INC' && !gOf(t) && t.created >= weeks[0].start && t.created < lastWeek.end)
+      .sort((a, b) => b.created - a.created);
     const gestores = Array.from(gestorMap.entries())
       .map(([gestor, counts]) => ({ gestor, counts, total: counts.reduce((a, b) => a + b, 0), unidentified: gestor === NO_GESTOR }))
       .sort((a, b) => (a.unidentified - b.unidentified) || a.gestor.localeCompare(b.gestor, 'es'));
@@ -768,6 +771,7 @@
       ot,
       gestores,
       gestorInferred: inferGestor ? inferredCount : 0,
+      noGestorTickets,
       gestorUnidentified: (gestores.find((g) => g.unidentified) || { total: 0 }).total,
       pending,
       months,
@@ -838,6 +842,9 @@
       if (g !== r.inc[i].nuevos) badG.push(`sem. ${w.week} (${g} vs ${r.inc[i].nuevos})`);
     });
     add(!badG.length, '2.2 Casos por gestor: weekly totals = "Nuevos durante la semana" (Incidencias) in 2.1', `Mismatch: ${badG.join(', ')}.`);
+    const unidentifiedRow = (r.gestores.find((g) => g.unidentified) || { total: 0 }).total;
+    add(r.noGestorTickets.length === unidentifiedRow, '2.2: the “Sin gestor identificado” ticket list has exactly the tickets counted in that row',
+      `List has ${r.noGestorTickets.length}, row shows ${unidentifiedRow}.`);
     const dupNames = new Set();
     const keys = new Set();
     for (const g of r.gestores) { const k = gestorKey(g.gestor); if (keys.has(k)) dupNames.add(g.gestor); keys.add(k); }
@@ -897,6 +904,20 @@
     }
     const keys = Object.keys(data);
     return keys.map((k) => ({ name: k, data: data[k] }));
+  }
+
+  /** Why a ticket has no gestor — shown next to each ticket of "Sin gestor identificado". */
+  const NO_GESTOR_REASONS = {
+    empty: 'Current action is empty in the Excel',
+    trabajando: 'Action names a technician / work status, not a gestor (e.g. “JR - Trabajando”)',
+    devuelto: 'Returned (DEVUELTO) — the action has no gestor',
+    cerrado: 'Action is only “Cerrado”',
+    unrecognised: 'Action format not recognised as GESTOR - PROBLEMA - TÉCNICO',
+  };
+
+  function noGestorReason(t) {
+    const code = t.actionKind === 'gestor' ? 'unrecognised' : (NO_GESTOR_REASONS[t.actionKind] ? t.actionKind : 'unrecognised');
+    return { code, label: NO_GESTOR_REASONS[code] };
   }
 
   /* ------------------------------------------------------------------ */
@@ -1025,8 +1046,9 @@
       unidentifiedTotal: (gestores.find((g) => g.unidentified) || { total: 0 }).total,
     };
 
+    const noGestorTickets = opened.filter((t) => !gOf(t)).sort((a, b) => b.created - a.created);
     const p = {
-      year, month, label, start, end, asOf, partial, dataUntil,
+      year, month, label, start, end, asOf, partial, dataUntil, noGestorTickets,
       buckets, summary,
       series: { opened: openedSeries, resolved: resolvedSeries, status: statusSeries, vendor: vendorSeries },
       gestores, gestorChart,
@@ -1058,6 +1080,8 @@
       `Chart ${sumSeries(p.series.vendor)} vs ${I.escalados + O.escalados}.`);
     const gi = p.gestores.reduce((a, g) => a + g.inc, 0), go = p.gestores.reduce((a, g) => a + g.ot, 0);
     add(gi === I.abiertos && go === O.abiertos, 'Cases by gestor add up to the opened incidencias and OTs', `Gestor table ${gi}/${go} vs ${I.abiertos}/${O.abiertos}.`);
+    const unid = (p.gestores.find((g) => g.unidentified) || { total: 0 }).total;
+    add(p.noGestorTickets.length === unid, '“Sin gestor identificado” ticket list matches its row in the gestor table', `List ${p.noGestorTickets.length} vs row ${unid}.`);
     const keys = new Set(p.gestores.map((g) => gestorKey(g.gestor)));
     add(keys.size === p.gestores.length, 'Each gestor appears only once', 'Repeated gestor rows.');
     const gc = p.gestorChart.series.reduce((a, s) => a + s.data.reduce((x, y) => x + y, 0), 0);
@@ -1128,6 +1152,6 @@
     isoWeekInfo, weekFromKey, weekRange, weeksOfMonth, weeksInIsoYear, nextWeekKey,
     monthKeyOf, monthLabel, monthShort, monthsEndingAt, prevMonthKey, nextMonthKey,
     fmtDateTime, fmtDate, toExcelSerial,
-    computeReport, summarize, weeklyForCategory, validateReport, gestorKey, periodMonthsLabel, buildGestorMatcher, weekSplitText, computePeriod, validatePeriod, periodsAvailable,
+    computeReport, summarize, weeklyForCategory, validateReport, gestorKey, periodMonthsLabel, buildGestorMatcher, weekSplitText, computePeriod, validatePeriod, periodsAvailable, noGestorReason, NO_GESTOR_REASONS,
   };
 });

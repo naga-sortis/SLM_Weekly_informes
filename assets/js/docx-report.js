@@ -76,6 +76,32 @@
       });
     }
 
+    /** Numbers of a chart (rows = series, columns = categories) shown under its image. */
+    function chartDataTable(t) {
+      if (!t || !t.labels || !t.labels.length) return null;
+      const multi = t.labels.length > 1;
+      const nCols = t.labels.length + (multi ? 1 : 0);
+      const LW = Math.min(2400, Math.max(1700, CONTENT_W - nCols * 520));
+      const CW = Math.floor((CONTENT_W - LW) / nCols);
+      const widths = [LW, ...Array(nCols).fill(CW)];
+      const sz = nCols > 9 ? 13 : 15;
+      const head = new D.TableRow({ tableHeader: true, children: [
+        cell('Casos', { width: LW, fill: DARK, color: 'FFFFFF', bold: true, left: true, size: sz }),
+        ...t.labels.map((l) => cell(l, { width: CW, fill: DARK, color: 'FFFFFF', bold: true, size: sz })),
+        ...(multi ? [cell('Total', { width: CW, fill: ORANGE, color: 'FFFFFF', bold: true, size: sz })] : []),
+      ] });
+      const rows = t.rows.map((r) => {
+        const fill = r.kind === 'total' ? 'E4E7EC' : (r.kind === 'subtotal' ? GREY : undefined);
+        const bold = r.kind !== 'series';
+        return new D.TableRow({ children: [
+          cell(r.name, { width: LW, left: true, fill, bold, size: sz }),
+          ...r.data.map((v) => cell(v, { width: CW, fill, bold, size: sz, color: v === 0 ? '9AA0A6' : undefined })),
+          ...(multi ? [cell(r.total, { width: CW, fill, bold: true, size: sz })] : []),
+        ] });
+      });
+      return table([head, ...rows], widths);
+    }
+
     /* ---------- weekly tables: label | sep | INC weeks | sep | OT weeks ---------- */
     const SEP = 140;
     const LABEL = Math.min(3600, CONTENT_W - 2 * SEP - 2 * n * 430);
@@ -239,7 +265,9 @@
       const img = images.charts.weekly.bar;
       const scale = Math.min(1, 620 / img.width);
       children.push(para(new D.ImageRun({ type: 'png', data: img.bytes, transformation: { width: Math.round(img.width * scale), height: Math.round(img.height * scale) } }),
-        { alignment: D.AlignmentType.CENTER, spacing: { after: 120 } }));
+        { alignment: D.AlignmentType.CENTER, spacing: { after: 80 } }));
+      const dt = chartDataTable(images.charts.weekly.table);
+      if (dt) children.push(dt, spacer(160));
     }
     children.push(text('Las tablas y gráficos presentados en este informe tienen como base el fichero de BRISE que nos envía semanalmente el CC – OSS',
       { italics: true, size: 17, color: '606060' }));
@@ -318,7 +346,8 @@
         if (!img) continue;
         const scale = Math.min(1, maxW / img.width);
         children.push(para(new D.ImageRun({ type: 'png', data: img.bytes, transformation: { width: Math.round(img.width * scale), height: Math.round(img.height * scale) } }),
-          { alignment: D.AlignmentType.CENTER, spacing: { after: 160 } }));
+          { alignment: D.AlignmentType.CENTER, spacing: { after: img === c.bar && c.table ? 80 : 160 } }));
+        if (img === c.bar) { const dt = chartDataTable(c.table); if (dt) children.push(dt, spacer(160)); }
       }
     };
     children.push(h2('3.1 Casos abiertos'));
@@ -377,11 +406,12 @@
           { alignment: D.AlignmentType.CENTER, spacing: { after: 160 } }));
       };
       children.push(h2('4.1 Casos abiertos y resueltos'));
-      img(pc.opened); img(pc.resolved);
+      const tbl = (k) => { const dt = chartDataTable((images.periodTables || {})[k]); if (dt) children.push(dt, spacer(160)); };
+      img(pc.opened); tbl('opened'); img(pc.resolved); tbl('resolved');
       children.push(h2('4.2 Estado de los casos'));
-      img(pc.status);
+      img(pc.status); tbl('status');
       children.push(h2('4.3 Casos escalados por fabricante'));
-      img(pc.vendor);
+      img(pc.vendor); tbl('vendor');
       children.push(h2('4.4 Casos por gestor'));
       img(pc.gestor);
       if (meta.period.gestorCaption) children.push(text(meta.period.gestorCaption, { italics: true, size: 17, color: '606060' }, { spacing: { after: 120 } }));

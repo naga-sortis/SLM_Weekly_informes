@@ -358,10 +358,12 @@
       el('thead', null, el('tr', { class: 'weeks' }, el('th', { text: 'GESTOR' }), el('th', { text: 'Incidencias' }), el('th', { text: 'OTs' }), el('th', { text: 'Total' }))),
       el('tbody', null,
         p.gestores.map((g) => el('tr', { class: g.unidentified ? 'unidentified' : null },
-          el('td', { text: g.gestor }), el('td', { class: g.inc ? null : 'zero', text: g.inc }), el('td', { class: g.ot ? null : 'zero', text: g.ot }),
+          el('td', { text: g.gestor, title: g.unidentified ? 'Show these tickets' : null,
+            onclick: g.unidentified ? () => $('#pNoGestorPanel').scrollIntoView({ behavior: 'smooth', block: 'start' }) : null }), el('td', { class: g.inc ? null : 'zero', text: g.inc }), el('td', { class: g.ot ? null : 'zero', text: g.ot }),
           el('td', { text: g.total, style: 'font-weight:600' }))),
         el('tr', { class: 'total' }, el('td', { text: 'TOTAL' }), tot.map((v) => el('td', { text: v })))))
       : el('p', { class: 'muted', text: 'No cases in this period.' }));
+    renderNoGestorPanel('period', 'pNoGestorPanel', p.noGestorTickets, `in ${p.label} (incidencias + OTs)`);
     renderPeriodCharts();
   }
 
@@ -394,14 +396,95 @@
     state.periodChartsDirty = false;
     const p = state.period;
     const labels = p.buckets.map((b) => b.label);
-    for (const [id, key, split] of PERIOD_CHARTS) {
-      if (state.charts[id]) state.charts[id].destroy();
-      state.charts[id] = new Chart(document.getElementById(id), CH.barConfig(labels, p.series[key], { dark: isDark(), splitStacks: split }));
-    }
+    for (const [id, key, split] of PERIOD_CHARTS) makeChart(id, labels, p.series[key], { splitStacks: split });
     $('#pGestorCaption').textContent = gestorCaption(p);
-    if (state.charts.pchGestor) state.charts.pchGestor.destroy();
-    state.charts.pchGestor = new Chart(document.getElementById('pchGestor'),
-      CH.barConfig(p.gestorChart.labels, p.gestorChart.series, { dark: isDark(), horizontal: true }));
+    makeChart('pchGestor', p.gestorChart.labels, p.gestorChart.series, { horizontal: true });
+  }
+
+  /* ---------- "Sin gestor identificado" panel ---------- */
+
+  const ngState = {};
+
+  function renderNoGestorPanel(key, containerId, tickets, scopeTxt) {
+    const box = document.getElementById(containerId);
+    const st = ngState[key] || (ngState[key] = { reason: '', q: '', limit: 100 });
+    if (!tickets.length) {
+      box.replaceChildren(el('h4', { text: 'Sin gestor identificado' }),
+        el('p', { class: 'ok-note', text: `✔ Every case ${scopeTxt} has a gestor in “Current action”.` }));
+      return;
+    }
+    const counts = new Map();
+    for (const t of tickets) { const r = C.noGestorReason(t); counts.set(r.code, (counts.get(r.code) || 0) + 1); }
+    if (st.reason && !counts.has(st.reason)) st.reason = '';
+    const q = st.q.trim().toLowerCase();
+    const list = tickets.filter((t) => (!st.reason || C.noGestorReason(t).code === st.reason) &&
+      (!q || `${t.id} ${t.action} ${t.description} ${t.groupName} ${t.gestorDesc}`.toLowerCase().includes(q)));
+    const failures = counts.get('unrecognised') || 0;
+    const rerender = () => renderNoGestorPanel(key, containerId, tickets, scopeTxt);
+
+    const chips = el('div', { class: 'chips', role: 'group', 'aria-label': 'Filter by reason' },
+      el('button', { type: 'button', class: `chip${st.reason ? '' : ' active'}`, onclick: () => { st.reason = ''; st.limit = 100; rerender(); } },
+        'All', el('b', { text: tickets.length })),
+      Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).map(([code, n]) => el('button', {
+        type: 'button', class: `chip${st.reason === code ? ' active' : ''}`, title: C.NO_GESTOR_REASONS[code],
+        onclick: () => { st.reason = code; st.limit = 100; rerender(); },
+      }, C.NO_GESTOR_REASONS[code].split(' (')[0].split(' — ')[0], el('b', { text: n }))));
+
+    const search = el('input', { type: 'search', placeholder: 'Search ticket ID, action, description…', value: st.q, 'aria-label': 'Search tickets without gestor' });
+    let timer;
+    search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { st.q = search.value; st.limit = 100; rerender(); const s2 = box.querySelector('input[type=search]'); if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); } }, 250); });
+
+    const shown = list.slice(0, st.limit);
+    const table = el('table', { class: 'data-table' },
+      el('thead', null, el('tr', null, ['Ticket ID', 'Creation date', 'Week', 'Type', 'Status', 'Current action (as in the Excel)', 'Reason', 'Gestor mentioned in description', 'Description']
+        .map((h) => el('th', { text: h, style: 'cursor:default' })))),
+      el('tbody', null, shown.length ? shown.map((t) => el('tr', null,
+        el('td', { text: t.id, style: 'font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:600' }),
+        el('td', { text: C.fmtDateTime(t.created) }),
+        el('td', { text: `${t.weekYear}-S${String(t.week).padStart(2, '0')}` }),
+        el('td', { text: t.category === 'INC' ? 'Incidencia' : `OT (${t.type})` }),
+        el('td', { text: t.status }),
+        t.action ? el('td', { text: t.action, title: t.action }) : el('td', null, el('span', { class: 'empty-val', text: '(empty)' })),
+        el('td', { class: 'reason', text: C.noGestorReason(t).label }),
+        el('td', { text: t.gestorDesc || '—' }),
+        el('td', { class: 'desc', text: t.description.replace(/\s+/g, ' '), title: t.description.slice(0, 1500) })))
+        : el('tr', null, el('td', { colspan: 9, class: 'muted', text: 'No tickets match the filter.' }))));
+
+    box.replaceChildren(...[
+      el('div', { class: 'ng-head' },
+        el('div', null,
+          el('h4', { text: `Sin gestor identificado — ${tickets.length} ticket(s) ${scopeTxt}` }),
+          el('p', { class: failures ? 'small' : 'ok-note', style: failures ? 'color:var(--err-text);margin:0' : 'margin:0',
+            text: failures ? `⚠ ${failures} ticket(s) have an action the tool could not read as GESTOR - PROBLEMA - TÉCNICO — please check them.`
+              : '✔ None of these is a reading error: the Excel has no gestor in “Current action” for them (see the reason of each ticket).' })),
+        el('button', { type: 'button', class: 'btn small', onclick: () => exportNoGestor(list, scopeTxt) }, `Export ${list.length} to Excel`)),
+      chips,
+      el('div', { class: 'toolbar' }, search, el('span', { class: 'muted small', text: `${list.length} shown of ${tickets.length}` })),
+      el('div', { class: 'table-wrap data-wrap' }, table),
+      list.length > shown.length ? el('button', { type: 'button', class: 'btn small more', onclick: () => { st.limit += 200; rerender(); } },
+        `Show more (${list.length - shown.length} remaining)`) : null].filter(Boolean));
+  }
+
+  function exportNoGestor(list, scopeTxt) {
+    try {
+      const aoa = [['Ticket ID', 'Creation date', 'Week (ISO)', 'Ticket type', 'Status', 'Current action', 'Reason', 'Gestor mentioned in description',
+        'Initiator - Group ID', 'Initiator - Group abbreviation name', 'Description']];
+      for (const t of list) {
+        aoa.push([t.id, C.toExcelSerial(t.created), `${t.weekYear}-S${String(t.week).padStart(2, '0')}`, t.type, t.status, t.action,
+          C.noGestorReason(t).label, t.gestorDesc, t.groupId, t.groupName, t.description.slice(0, 32000)]);
+      }
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      for (let r = 1; r < aoa.length; r++) { const ref = XLSX.utils.encode_cell({ r, c: 1 }); if (ws[ref]) ws[ref].z = 'yyyy-mm-dd hh:mm'; }
+      ws['!cols'] = [14, 17, 11, 14, 18, 40, 55, 22, 14, 30, 80].map((w) => ({ wch: w }));
+      ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: aoa[0].length - 1 } }) };
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Sin gestor');
+      XLSX.writeFile(wb, `sin-gestor-${safeFilePart(scopeTxt)}.xlsx`, { compression: true });
+      toast(`Excel downloaded (${list.length} tickets).`);
+    } catch (err) {
+      console.error(err);
+      toast(`Could not create the Excel file: ${err && err.message ? err.message : err}`, true);
+    }
   }
 
   function updateWordButton() {
@@ -543,7 +626,8 @@
         el('th', { text: 'Total' }))),
       el('tbody', null,
         r.gestores.map((g) => el('tr', { class: g.unidentified ? 'unidentified' : null },
-          el('td', { text: g.gestor }),
+          el('td', { text: g.gestor, title: g.unidentified ? 'Show these tickets' : null,
+            onclick: g.unidentified ? () => $('#noGestorPanel').scrollIntoView({ behavior: 'smooth', block: 'start' }) : null }),
           g.counts.map((v) => el('td', { class: v === 0 ? 'zero' : null, text: v })),
           el('td', { text: g.total, style: 'font-weight:600' }))),
         el('tr', { class: 'total' }, el('td', { text: 'TOTAL' }), totals.map((v) => el('td', { text: v })),
@@ -553,6 +637,8 @@
     if (r.gestorUnidentified) notes.push(`Across the ${r.weeks.length} week(s) shown, ${r.gestorUnidentified} incidencia(s) have no gestor in “Current action” (e.g. “JR - Trabajando”, empty or DEVUELTO) and are shown as “Sin gestor identificado”.`);
     if (r.gestorInferred) notes.push(`${r.gestorInferred} gestor(s) were taken from the ticket description (option enabled); this is stated in the Word report.`);
     $('#gestorNote').textContent = notes.join(' ');
+    renderNoGestorPanel('weekly', 'noGestorPanel', r.noGestorTickets,
+      `in semanas ${r.weeks[0].week}–${r.reportWeek.week} (incidencias)`);
   }
 
   function renderPending() {
@@ -617,15 +703,30 @@
     if (!panelVisible) { state.chartsDirty = true; return; }
     state.chartsDirty = false;
     const r = state.report;
-    if (state.charts.chWeekly) state.charts.chWeekly.destroy();
-    state.charts.chWeekly = new Chart(document.getElementById('chWeekly'),
-      CH.barConfig(weeklyLabels(r), weeklySeries(r), { dark: isDark() }));
+    makeChart('chWeekly', weeklyLabels(r), weeklySeries(r), {});
     $('#monthlyNote').textContent = C.weekSplitText(r);
-    for (const [id, key, split] of CHART_DEFS) {
-      if (state.charts[id]) state.charts[id].destroy();
-      const cfg = CH.barConfig(r.monthLabels, r.monthly[key], { dark: isDark(), splitStacks: split });
-      state.charts[id] = new Chart(document.getElementById(id), cfg);
-    }
+    for (const [id, key, split] of CHART_DEFS) makeChart(id, r.monthLabels, r.monthly[key], { splitStacks: split });
+  }
+
+  /** Create (or re-create) a chart and the table of its numbers under the legend. */
+  function makeChart(id, labels, series, opts) {
+    if (state.charts[id]) state.charts[id].destroy();
+    state.charts[id] = new Chart(document.getElementById(id), CH.barConfig(labels, series, { dark: isDark(), ...opts }));
+    if (!opts.horizontal) renderChartTable(id, labels, series);
+  }
+
+  function renderChartTable(canvasId, labels, series) {
+    const fig = document.getElementById(canvasId).closest('.chart-card');
+    let box = fig.querySelector('.chart-table');
+    if (!box) { box = el('div', { class: 'chart-table' }); fig.appendChild(box); }
+    const t = CH.chartTable(labels, series);
+    const multi = labels.length > 1;
+    box.replaceChildren(el('table', null,
+      el('thead', null, el('tr', null, el('th', { text: 'Casos' }), labels.map((l) => el('th', { text: l })), multi ? el('th', { text: 'Total' }) : null)),
+      el('tbody', null, t.rows.map((r, i) => el('tr', { class: r.kind === 'series' ? null : r.kind },
+        el('td', null, r.kind === 'series' ? el('span', { class: 'sw', style: `background:${CH.colorFor(r.name, i)}` }) : null, r.name),
+        r.data.map((v) => el('td', { class: v === 0 ? 'zero' : null, text: v })),
+        multi ? el('td', { text: r.total, style: 'font-weight:600' }) : null)))));
   }
 
   function weeklyLabels(r) {
@@ -840,17 +941,25 @@
         const bar = CH.renderPng(CH.barConfig(labels, series, { static: true, splitStacks: split, title: titles[key][0] }), 1000, 460);
         const d = CH.doughnutConfig(series, idx, titles[key][1]);
         const pie = d.empty ? null : CH.renderPng(d.config, 760, 340);
-        charts[key] = { bar, pie };
+        charts[key] = { bar, pie, table: CH.chartTable(labels, series) };
         await nextFrame();
       }
       charts.weekly = {
         bar: CH.renderPng(CH.barConfig(weeklyLabels(r), weeklySeries(r), { static: true, title: `Casos nuevos por semana (semanas ${r.weeks[0].week}–${r.reportWeek.week})` }), 1000, 420),
         pie: null,
+        table: CH.chartTable(weeklyLabels(r), weeklySeries(r)),
       };
       let periodCharts = null;
+      let periodTables = null;
       if (includePeriod) {
         const p = state.period;
         const pl = p.buckets.map((b) => b.label);
+        periodTables = {
+          opened: CH.chartTable(pl, p.series.opened),
+          resolved: CH.chartTable(pl, p.series.resolved),
+          status: CH.chartTable(pl, p.series.status),
+          vendor: CH.chartTable(pl, p.series.vendor),
+        };
         periodCharts = {
           opened: CH.renderPng(CH.barConfig(pl, p.series.opened, { static: true, title: `Casos abiertos — ${p.label}` }), 1000, 440),
           resolved: CH.renderPng(CH.barConfig(pl, p.series.resolved, { static: true, title: `Casos resueltos — ${p.label}` }), 1000, 440),
@@ -882,7 +991,7 @@
         dataUntil: state.summary.dataUntil,
       };
       if (includePeriod) meta.period = { data: state.period, note: periodNote(state.period), gestorCaption: gestorCaption(state.period) };
-      const doc = SLMDocx.buildDocument(window.docx, C, r, meta, { logo, charts, periodCharts });
+      const doc = SLMDocx.buildDocument(window.docx, C, r, meta, { logo, charts, periodCharts, periodTables });
       const blob = await docx.Packer.toBlob(doc);
       const name = `INFORME-SLM-OSS-Sortis-${r.reportWeek.year}-Semana${String(r.reportWeek.week).padStart(2, '0')}-${safeFilePart(r.periodLabel.replace(/ \/ /g, '-'))}.docx`;
       downloadBlob(blob, name);

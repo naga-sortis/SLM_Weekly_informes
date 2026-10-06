@@ -61,6 +61,7 @@
         animation: opts.static ? false : { duration: 300 },
         devicePixelRatio: opts.static ? 2 : undefined,
         indexAxis: opts.horizontal ? 'y' : 'x',
+        layout: { padding: { top: opts.horizontal ? 0 : 18, right: opts.horizontal ? 36 : 0 } },
         interaction: { mode: 'index', intersect: false, axis: opts.horizontal ? 'y' : 'x' },
         plugins: {
           legend: { position: 'bottom', labels: { color: text, boxWidth: 12, boxHeight: 12, padding: 12, font: { size: opts.static ? 13 : 12 } } },
@@ -76,13 +77,48 @@
         },
         scales: opts.horizontal ? {
           y: { stacked: true, ticks: { color: text, autoSkip: false, font: { size: opts.static ? 12 : 11 } }, grid: { display: false } },
-          x: { stacked: true, beginAtZero: true, ticks: { color: text, precision: 0, font: { size: opts.static ? 13 : 12 } }, grid: { color: grid } },
+          x: { stacked: true, beginAtZero: true, grace: '8%', ticks: { color: text, precision: 0, font: { size: opts.static ? 13 : 12 } }, grid: { color: grid } },
         } : {
           x: { stacked: true, ticks: { color: text, font: { size: opts.static ? 13 : 12 } }, grid: { display: false } },
-          y: { stacked: true, beginAtZero: true, ticks: { color: text, precision: 0, font: { size: opts.static ? 13 : 12 } }, grid: { color: grid } },
+          y: { stacked: true, beginAtZero: true, grace: '8%', ticks: { color: text, precision: 0, font: { size: opts.static ? 13 : 12 } }, grid: { color: grid } },
         },
       },
-      plugins: opts.static ? [whiteBackground] : [],
+      plugins: opts.static ? [whiteBackground, stackTotals(text, opts)] : [stackTotals(text, opts)],
+    };
+  }
+
+  /** Draws the total of each stacked bar (per stack) above the bar, or after it for horizontal charts. */
+  function stackTotals(color, opts) {
+    return {
+      id: 'stackTotals',
+      afterDatasetsDraw(chart) {
+        const { ctx } = chart;
+        const horizontal = chart.options.indexAxis === 'y';
+        const n = chart.data.labels.length;
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.font = `600 ${opts.static ? 13 : 11}px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif`;
+        ctx.textAlign = horizontal ? 'left' : 'center';
+        ctx.textBaseline = horizontal ? 'middle' : 'bottom';
+        for (let i = 0; i < n; i++) {
+          const stacks = new Map();
+          chart.data.datasets.forEach((ds, di) => {
+            if (!chart.isDatasetVisible(di)) return;
+            const v = Number(ds.data[i]) || 0;
+            const key = ds.stack || 'all';
+            const cur = stacks.get(key) || { sum: 0, el: null };
+            cur.sum += v;
+            if (v > 0) cur.el = chart.getDatasetMeta(di).data[i];
+            stacks.set(key, cur);
+          });
+          for (const { sum, el } of stacks.values()) {
+            if (!el || !sum) continue;
+            if (horizontal) ctx.fillText(String(sum), el.x + 5, el.y);
+            else ctx.fillText(String(sum), el.x, el.y - 3);
+          }
+        }
+        ctx.restore();
+      },
     };
   }
 
@@ -149,5 +185,23 @@
     }
   }
 
-  root.SLMCharts = { barConfig, doughnutConfig, renderPng, colorFor };
+  /**
+   * Numbers behind a stacked chart: one row per series, subtotal rows for incidencias / OTs
+   * when the chart mixes both, and a Total row. Columns = chart categories.
+   */
+  function chartTable(labels, series) {
+    const rows = series.map((s) => ({ name: s.name, data: s.data.slice(), kind: 'series' }));
+    const sumOf = (list) => labels.map((_, i) => list.reduce((a, s) => a + (Number(s.data[i]) || 0), 0));
+    const inc = series.filter((s) => s.name.startsWith('Inc.') || s.name === 'Incidencias');
+    const ot = series.filter((s) => s.name.startsWith('OTs'));
+    if (inc.length > 1 || (inc.length && ot.length && series.length > 2)) {
+      rows.push({ name: 'Total incidencias', data: sumOf(inc), kind: 'subtotal' });
+      if (ot.length) rows.push({ name: 'Total OTs', data: sumOf(ot), kind: 'subtotal' });
+    }
+    rows.push({ name: 'Total', data: sumOf(series), kind: 'total' });
+    rows.forEach((r) => { r.total = r.data.reduce((a, b) => a + b, 0); });
+    return { labels, rows };
+  }
+
+  root.SLMCharts = { chartTable, barConfig, doughnutConfig, renderPng, colorFor };
 })(typeof self !== 'undefined' ? self : this);
