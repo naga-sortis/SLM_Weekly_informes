@@ -395,4 +395,47 @@ table.rep tr.unidentified td:first-child { cursor: pointer; text-decoration: und
 .chart-table table { table-layout: auto; }
 .chart-table th { white-space: normal; line-height: 1.2; font-size: 11px; }
 .chart-table td, .chart-table th { padding: 3px 4px; }
-.chart-table td:first-child { white-space: nowrap; }
+.chart-table td:first-child { white-space: normal; min-width: 120px; line-height: 1.25; }
+
+/* Word sections picker */
+.sections-pick { border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px 14px; }
+.sections-pick legend { font-size: 12.5px; font-weight: 600; padding: 0 4px; }
+.sections-pick label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; cursor: pointer; }
+
+/* Column chooser */
+.colpick { position: relative; }
+.colpick > summary { list-style: none; }
+.colpick > summary::-webkit-details-marker { display: none; }
+.colpick-menu { position: absolute; z-index: 30; right: 0; top: calc(100% + 6px); width: 300px; max-height: 420px; overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.18); padding: 8px 10px; }
+.colpick-menu label { display: flex; align-items: center; gap: 8px; font-size: 12.5px; padding: 3px 0; cursor: pointer; }
+.colpick-menu .cp-actions { display: flex; gap: 8px; padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
+
+/* Clickable ticket IDs */
+.tid { font: 600 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--accent); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline dotted; }
+.tid:hover { text-decoration: underline; }
+
+/* Ticket detail dialog */
+.ticket-dialog { width: min(980px, calc(100vw - 32px)); max-height: calc(100vh - 48px); border: 1px solid var(--border); border-radius: 14px; padding: 0; background: var(--surface); color: var(--text); box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+.ticket-dialog::backdrop { background: rgba(10, 12, 18, .55); }
+.td-head { position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 16px 20px 12px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.td-head h2 { font: 700 18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin-bottom: 6px; }
+.td-head .badges { justify-content: flex-start; }
+#tdBody { padding: 14px 20px 20px; }
+.td-flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+.td-step { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; position: relative; background: var(--surface); }
+.td-step.done { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); }
+.td-step.sortis { box-shadow: inset 3px 0 0 var(--accent); }
+.td-step .st-title { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 700; }
+.td-step .st-date { font-size: 12.5px; margin: 2px 0 6px; font-variant-numeric: tabular-nums; }
+.td-step .st-who { font-weight: 600; font-size: 13px; overflow-wrap: anywhere; }
+.td-step .st-grp { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.td-sec { margin-top: 14px; }
+.td-sec h4 { font-size: 13px; margin: 0 0 6px; color: var(--accent); }
+.td-grid { display: grid; grid-template-columns: 230px minmax(0, 1fr); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 12.5px; }
+.td-grid > div { padding: 5px 10px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.td-grid > div:nth-last-child(-n+2) { border-bottom: none; }
+.td-grid .k { color: var(--muted); background: var(--surface-2); }
+.td-grid .v.empty { color: var(--muted); font-style: italic; }
+.td-grid .alt { display: block; color: var(--warn-text); font-size: 12px; margin-top: 2px; }
+.td-desc { white-space: pre-line; font-size: 12.5px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; max-height: 260px; overflow: auto; }
+@media (max-width: 760px) { .td-flow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .td-grid { grid-template-columns: 140px minmax(0, 1fr); } }

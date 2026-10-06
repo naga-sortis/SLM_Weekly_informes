@@ -39,6 +39,20 @@
     description: ['description', 'descripcion'],
     restorationDate: ['restoration date', 'fecha de restauracion'],
     restorationGroupId: ['restoration group id'],
+    // Detail columns (shown in the ticket detail / Sortis team view; not used by the weekly figures)
+    ackDate: ['acknowledgement date', 'acknowledgment date'],
+    identifier1: ['identifier 1'],
+    identifier2: ['identifier 2'],
+    identifier3: ['identifier 3'],
+    identifier4: ['identifier 4'],
+    duration: ['calculated ticket duration'],
+    shortLabel: ['short label'],
+    finalNature: ['final nature'],
+    restorationGroupName: ['restoration group abbreviation name'],
+    restorationUser: ['restoration user name'],
+    closureGroupId: ['closure group id'],
+    closureGroupName: ['closure group abbreviation name'],
+    closureUser: ['closure user name'],
   };
 
   const REQUIRED_FIELDS = ['ticketId', 'creationDate', 'ticketType', 'status'];
@@ -60,6 +74,19 @@
     description: 'Description',
     restorationDate: 'Restoration date',
     restorationGroupId: 'Restoration group ID',
+    ackDate: 'Acknowledgement date',
+    identifier1: 'Identifier 1',
+    identifier2: 'Identifier 2',
+    identifier3: 'Identifier 3',
+    identifier4: 'Identifier 4',
+    duration: 'Calculated ticket duration',
+    shortLabel: 'Short label',
+    finalNature: 'Final nature',
+    restorationGroupName: 'Restoration group abbreviation name',
+    restorationUser: 'Restoration user name',
+    closureGroupId: 'Closure group ID',
+    closureGroupName: 'Closure group abbreviation name',
+    closureUser: 'Closure user name',
   };
 
   function stripAccents(s) {
@@ -421,16 +448,40 @@
       }
       for (const f of Object.keys(FIELD_ALIASES)) if (map[f] === undefined) missingOptional.add(FIELD_LABELS[f]);
       const get = (row, f) => (map[f] === undefined ? null : row[map[f]]);
+      // Every column of the sheet, as written in the Excel (for the ticket detail view)
+      const headerCols = [];
+      (sheet.rows[header.index] || []).forEach((h, c) => {
+        const name = str(h);
+        if (name) headerCols.push({ c, name, isDate: /date|fecha/i.test(name) });
+      });
+      const rawOf = (row) => headerCols.map(({ c, name, isDate }) => {
+        const v = row[c];
+        if (isDate && v !== null && v !== undefined && v !== '') {
+          const ms = parseDate(v, date1904);
+          return [name, ms === null ? str(v) : fmtDateTime(ms)];
+        }
+        return [name, str(v)];
+      });
 
       for (let i = header.index + 1; i < sheet.rows.length; i++) {
         const row = sheet.rows[i];
         if (!row) continue;
         const id = str(get(row, 'ticketId'));
         if (!id) continue;
-        if (seen.has(id)) { duplicates++; continue; }
+        if (seen.has(id)) {
+          duplicates++;
+          // Keep the first row for the report figures, but never lose information from the others.
+          mergeDetails(seen.get(id), rawOf(row), detailsOf(row, get, date1904), sheet.name);
+          continue;
+        }
         const created = parseDate(get(row, 'creationDate'), date1904);
         if (created === null) { invalidDates++; continue; }
         const t = buildTicket(id, created, row, get, date1904);
+        Object.assign(t, detailsOf(row, get, date1904));
+        t.closureGroups = t.closureGroupId ? [groupLabel(t.closureGroupId, t.closureGroupName)] : [];
+        t.raw = rawOf(row);
+        t.rawAlt = {};
+        t.sheets = [sheet.name];
         seen.set(id, t);
       }
     }
@@ -458,6 +509,8 @@
     if (restoredBefore) warnings.push(`${restoredBefore} ticket(s) have a Restoration date earlier than the Creation date; they are treated as resolved at creation.`);
 
     if (duplicates) warnings.push(`${duplicates} duplicated Ticket ID row(s) were ignored (first occurrence kept).`);
+    const multi = tickets.filter((t) => Object.keys(t.rawAlt).length).length;
+    if (multi) warnings.push(`${multi} ticket(s) appear more than once with different values (e.g. several closure groups); all values are kept and shown in the ticket detail.`);
     if (invalidDates) warnings.push(`${invalidDates} row(s) without a valid Creation date were ignored.`);
     const optionalImportant = ['Third party reference', 'Processing priority', 'Initiator - Group ID',
       'Initiator - Group abbreviation name', 'Current action', 'Restoration date'];
@@ -528,6 +581,48 @@
   function inferGestoresFromDescription(tickets) {
     const match = buildGestorMatcher(tickets);
     for (const t of tickets) t.gestorDesc = t.gestor || t.devuelto ? '' : match(t.description);
+  }
+
+  function groupLabel(id, name) {
+    return id ? (name ? `${id} (${name})` : id) : '';
+  }
+
+  /** Detail columns that are not needed for the report figures. */
+  function detailsOf(row, get, date1904) {
+    const num = (v) => { const n = typeof v === 'number' ? v : Number(str(v)); return str(v) !== '' && Number.isFinite(n) ? n : null; };
+    return {
+      ackDate: parseDate(get(row, 'ackDate'), date1904),
+      identifier1: str(get(row, 'identifier1')),
+      identifier2: str(get(row, 'identifier2')),
+      identifier3: str(get(row, 'identifier3')),
+      identifier4: str(get(row, 'identifier4')),
+      duration: num(get(row, 'duration')),
+      shortLabel: str(get(row, 'shortLabel')),
+      finalNature: str(get(row, 'finalNature')),
+      restorationGroupName: str(get(row, 'restorationGroupName')),
+      restorationUser: str(get(row, 'restorationUser')),
+      closureGroupId: str(get(row, 'closureGroupId')),
+      closureGroupName: str(get(row, 'closureGroupName')),
+      closureUser: str(get(row, 'closureUser')),
+    };
+  }
+
+  /** Merge a duplicate row of a ticket: fill blanks, keep every different value. */
+  function mergeDetails(t, raw, det, sheetName) {
+    if (!t.sheets.includes(sheetName)) t.sheets.push(sheetName);
+    for (const [name, v] of raw) {
+      const cur = t.raw.find((x) => x[0] === name);
+      if (!cur) { t.raw.push([name, v]); continue; }
+      if (!v || v === cur[1]) continue;
+      if (!cur[1]) { cur[1] = v; continue; }
+      const alt = t.rawAlt[name] || (t.rawAlt[name] = []);
+      if (!alt.includes(v)) alt.push(v);
+    }
+    for (const [k, v] of Object.entries(det)) {
+      if ((t[k] === '' || t[k] === null || t[k] === undefined) && v !== '' && v !== null) t[k] = v;
+    }
+    const cg = groupLabel(det.closureGroupId, det.closureGroupName);
+    if (cg && !t.closureGroups.includes(cg)) t.closureGroups.push(cg);
   }
 
   function buildTicket(id, created, row, get, date1904) {
@@ -1102,6 +1197,152 @@
       .map(([year, ms]) => ({ year, months: Array.from(ms).sort((a, b) => a - b) }));
   }
 
+  /* ------------------------------------------------------------------ */
+  /* Sortis team view (restoration groups XSP00025 / XSP00027)           */
+  /* ------------------------------------------------------------------ */
+
+  const NO_USER = '(sin usuario de restauración)';
+
+  function median(arr) {
+    if (!arr.length) return null;
+    const a = arr.slice().sort((x, y) => x - y);
+    const m = Math.floor(a.length / 2);
+    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+  }
+
+  /**
+   * Who in the Sortis team restored the tickets. A ticket belongs to the team when its
+   * Restoration group ID is one of `groups`. The period (year / month, or everything) is
+   * applied to the Restoration date (basis 'restored') or to the Creation date ('created').
+   */
+  function computeTeam(tickets, options) {
+    const groups = (options.groups || []).map((g) => g.trim().toUpperCase()).filter(Boolean);
+    const groupSet = new Set(groups);
+    const year = options.year ? Number(options.year) : null;
+    const month = year && options.month ? Number(options.month) : null;
+    const basis = options.basis === 'created' ? 'created' : 'restored';
+    const queue = options.queue ? options.queue.toUpperCase() : '';
+    const dateOf = (t) => (basis === 'created' ? t.created : t.restored);
+    let start = null, end = null;
+    if (year) {
+      start = month ? Date.UTC(year, month - 1, 1) : Date.UTC(year, 0, 1);
+      end = month ? Date.UTC(month === 12 ? year + 1 : year, month === 12 ? 0 : month, 1) : Date.UTC(year + 1, 0, 1);
+    }
+    const label = year ? (month ? monthLabel(year * 100 + month) : `Año ${year}`) : 'Todo el periodo';
+    const inPeriod = (t) => {
+      if (start === null) return true; // no period: every ticket, even without a date
+      const d = dateOf(t);
+      return d !== null && d !== undefined && d >= start && d < end;
+    };
+    // Date used to place a ticket on the trend chart (creation date if it has no restoration date)
+    const placeOf = (t) => dateOf(t) ?? t.created;
+    const team = tickets.filter((t) => groupSet.has((t.restorationGroupId || '').toUpperCase()) &&
+      (!queue || t.restorationGroupId.toUpperCase() === queue) && inPeriod(t))
+      .sort((a, b) => (b.restored ?? b.created) - (a.restored ?? a.created));
+    const undated = basis === 'restored'
+      ? tickets.filter((t) => groupSet.has((t.restorationGroupId || '').toUpperCase()) && (!queue || t.restorationGroupId.toUpperCase() === queue) && t.restored === null).length
+      : 0;
+
+    const hoursOf = (t) => (t.restored !== null && t.restored >= t.created ? (t.restored - t.created) / 3600000 : null);
+    const emap = new Map();
+    for (const t of team) {
+      const user = t.restorationUser || NO_USER;
+      if (!emap.has(user)) {
+        emap.set(user, { user, noUser: user === NO_USER, byGroup: Object.fromEntries(groups.map((g) => [g, { inc: 0, ot: 0 }])),
+          inc: 0, ot: 0, total: 0, hours: [], closedByThem: 0, first: Infinity, last: -Infinity });
+      }
+      const e = emap.get(user);
+      const g = t.restorationGroupId.toUpperCase();
+      if (t.category === 'INC') { e.inc++; e.byGroup[g].inc++; } else { e.ot++; e.byGroup[g].ot++; }
+      e.total++;
+      const h = hoursOf(t);
+      if (h !== null) e.hours.push(h);
+      if (t.closureUser && t.restorationUser && t.closureUser === t.restorationUser) e.closedByThem++;
+      const d = placeOf(t);
+      if (d < e.first) e.first = d;
+      if (d > e.last) e.last = d;
+    }
+    const engineers = Array.from(emap.values()).map((e) => ({
+      ...e, medianHours: median(e.hours), hours: undefined,
+    })).sort((a, b) => (a.noUser - b.noUser) || b.total - a.total || a.user.localeCompare(b.user, 'es'));
+
+    const byGroup = groups.map((g) => {
+      const list = team.filter((t) => t.restorationGroupId.toUpperCase() === g);
+      return { group: g, name: (list.find((t) => t.restorationGroupName) || {}).restorationGroupName || '',
+        inc: list.filter((t) => t.category === 'INC').length, ot: list.filter((t) => t.category === 'OT').length,
+        total: list.length, engineers: new Set(list.map((t) => t.restorationUser || NO_USER)).size };
+    });
+
+    // Trend buckets: months of the year / weeks of the month / years when no period is selected
+    const buckets = [];
+    if (month) {
+      let d = start;
+      while (d < end) {
+        const info = isoWeekInfo(d);
+        const bEnd = Math.min(info.start + WEEK, end);
+        buckets.push({ start: d, end: bEnd, label: `sem. ${info.week} (${fmtDate(d).slice(0, 2)}–${fmtDate(bEnd - DAY).slice(0, 5)})` });
+        d = bEnd;
+      }
+    } else if (year) {
+      for (let m = 0; m < 12; m++) buckets.push({ start: Date.UTC(year, m, 1), end: Date.UTC(m === 11 ? year + 1 : year, m === 11 ? 0 : m + 1, 1), label: `${MONTHS_ES[m].slice(0, 3)} ${year}` });
+    } else {
+      const ys = Array.from(new Set(team.map((t) => new Date(placeOf(t)).getUTCFullYear()))).sort();
+      for (const y of ys) buckets.push({ start: Date.UTC(y, 0, 1), end: Date.UTC(y + 1, 0, 1), label: String(y) });
+    }
+    // drop empty trailing buckets (future)
+    while (buckets.length > 1 && !team.some((t) => placeOf(t) >= buckets[buckets.length - 1].start && placeOf(t) < buckets[buckets.length - 1].end)) buckets.pop();
+    const bucketOf = (ms) => buckets.findIndex((b) => ms >= b.start && ms < b.end);
+    const TOPN = 10;
+    const top = engineers.filter((e) => !e.noUser).slice(0, TOPN).map((e) => e.user);
+    const trendKeys = [...top, 'Otros'];
+    const trendData = Object.fromEntries(trendKeys.map((k) => [k, buckets.map(() => 0)]));
+    for (const t of team) {
+      const i = bucketOf(placeOf(t));
+      if (i < 0) continue;
+      const k = top.includes(t.restorationUser) ? t.restorationUser : 'Otros';
+      trendData[k][i]++;
+    }
+    const trend = trendKeys.filter((k) => trendData[k].some((v) => v)).map((k) => ({ name: k, data: trendData[k] }));
+
+    // All restoration groups in the same period (to see who else dealt with the cases)
+    const allGroups = new Map();
+    for (const t of tickets) {
+      if (!inPeriod(t)) continue;
+      const g = t.restorationGroupId || '(sin grupo de restauración)';
+      if (!allGroups.has(g)) allGroups.set(g, { group: g, name: t.restorationGroupName || '', inc: 0, ot: 0, total: 0, users: new Set(), sortis: groupSet.has(g.toUpperCase()) });
+      const x = allGroups.get(g);
+      if (!x.name && t.restorationGroupName) x.name = t.restorationGroupName;
+      if (t.category === 'INC') x.inc++; else x.ot++;
+      x.total++;
+      if (t.restorationUser) x.users.add(t.restorationUser);
+    }
+    const restorationGroups = Array.from(allGroups.values()).map((x) => ({ ...x, users: x.users.size }))
+      .sort((a, b) => b.total - a.total);
+
+    const res = { groups, queue, year, month, basis, label, team, undated, engineers, byGroup, buckets, trend, restorationGroups,
+      total: team.length, inc: team.filter((t) => t.category === 'INC').length, ot: team.filter((t) => t.category === 'OT').length,
+      medianHours: median(team.map(hoursOf).filter((h) => h !== null)) };
+    res.checks = validateTeam(res);
+    return res;
+  }
+
+  function validateTeam(r) {
+    const checks = [];
+    const add = (ok, label, detail) => checks.push({ ok: !!ok, label, detail: ok ? '' : detail });
+    const se = r.engineers.reduce((a, e) => a + e.total, 0);
+    add(se === r.total, 'Engineers add up to all tickets restored by the team', `${se} vs ${r.total}.`);
+    add(r.engineers.every((e) => e.inc + e.ot === e.total), 'Each engineer: incidencias + OTs = total', 'Mismatch in an engineer row.');
+    add(r.engineers.every((e) => Object.values(e.byGroup).reduce((a, g) => a + g.inc + g.ot, 0) === e.total), 'Each engineer: queues add up to the total', 'Queue split does not add up.');
+    const sg = r.byGroup.reduce((a, g) => a + g.total, 0);
+    add(sg === r.total, 'Queues (XSP00025 / XSP00027) add up to the team total', `${sg} vs ${r.total}.`);
+    const st = r.trend.reduce((a, s) => a + s.data.reduce((x, y) => x + y, 0), 0);
+    add(st === r.total, 'Trend chart covers every ticket of the team exactly once', `${st} vs ${r.total}.`);
+    add(r.team.every((t) => r.groups.includes(t.restorationGroupId.toUpperCase())), 'Every listed ticket has a Sortis restoration group', 'A ticket outside the Sortis groups was included.');
+    const sortisInAll = r.restorationGroups.filter((g) => g.sortis && (!r.queue || g.group.toUpperCase() === r.queue)).reduce((a, g) => a + g.total, 0);
+    add(sortisInAll === r.total, 'Restoration-group table agrees with the team total', `${sortisInAll} vs ${r.total}.`);
+    return checks;
+  }
+
   /** Spanish sentence reconciling the report week with the monthly charts. */
   function weekSplitText(r) {
     const w = r.reportWeek;
@@ -1152,6 +1393,6 @@
     isoWeekInfo, weekFromKey, weekRange, weeksOfMonth, weeksInIsoYear, nextWeekKey,
     monthKeyOf, monthLabel, monthShort, monthsEndingAt, prevMonthKey, nextMonthKey,
     fmtDateTime, fmtDate, toExcelSerial,
-    computeReport, summarize, weeklyForCategory, validateReport, gestorKey, periodMonthsLabel, buildGestorMatcher, weekSplitText, computePeriod, validatePeriod, periodsAvailable, noGestorReason, NO_GESTOR_REASONS,
+    computeReport, summarize, weeklyForCategory, validateReport, gestorKey, periodMonthsLabel, buildGestorMatcher, weekSplitText, computePeriod, validatePeriod, periodsAvailable, noGestorReason, NO_GESTOR_REASONS, computeTeam, validateTeam,
   };
 });

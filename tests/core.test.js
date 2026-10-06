@@ -247,3 +247,67 @@ test('Numbers under each chart: series, subtotals and totals', () => {
   const w = CH.chartTable(['s1'], [{ name: 'Incidencias', data: [3] }, { name: 'OTs', data: [2] }]);
   assert.deepEqual(w.rows.map((r) => r.name), ['Incidencias', 'OTs', 'Total']);
 });
+
+const HEADER_FULL = [...HEADER, 'Restoration group ID', 'Restoration group abbreviation name', 'Restoration user name',
+  'Closure group ID', 'Closure group abbreviation name', 'Closure user name', 'Final nature'];
+function sheetFull(name, rows) {
+  return { name, rows: [[], HEADER_FULL, ...rows.map((r) => HEADER_FULL.map((h) => r[h] ?? null))] };
+}
+function rt(id, created, group, user, o = {}) {
+  return { ...ticket(id, created, { status: 'Closed', restored: o.restored || [created[0], created[1] + 1, created[2], 15], ...o }),
+    'Restoration group ID': group, 'Restoration group abbreviation name': group === 'XSP00025' ? 'SPOC_BO_EMS' : 'X',
+    'Restoration user name': user, 'Closure group ID': o.closure || null, 'Closure user name': o.closureUser || null };
+}
+
+test('All columns are kept and duplicate rows are merged, not lost', () => {
+  const a = rt('D1', [2026, 8, 1], 'XSP00027', 'PAREDES', { closure: '00XMOA' });
+  const b = rt('D1', [2026, 8, 1], 'XSP00027', 'PAREDES', { closure: '515702' });
+  const ex = C.extractTickets([sheetFull('asignados a', [a]), sheetFull('Ticket Work Order 2025', [b])]);
+  const t = ex.tickets[0];
+  assert.deepEqual(t.sheets, ['asignados a', 'Ticket Work Order 2025']);
+  assert.deepEqual(t.closureGroups, ['00XMOA', '515702']);
+  assert.deepEqual(t.rawAlt['Closure group ID'], ['515702']);
+  assert.equal(t.restorationUser, 'PAREDES');
+  assert.ok(t.raw.some(([k, v]) => k === 'Final nature'));
+  assert.ok(t.raw.find(([k]) => k === 'Creation date')[1].startsWith('2026/09/01'));
+});
+
+test('Sortis team: restoration group / user from all sheets', () => {
+  const rows = [
+    rt('T1', [2026, 8, 1], 'XSP00025', 'ARCE LETICIA'),
+    rt('T2', [2026, 8, 2], 'XSP00025', 'ARCE LETICIA', { type: 'Work order' }),
+    rt('T3', [2026, 8, 3], 'XSP00027', 'PAREDES NAVARRO ADRIAN', { type: 'Work order', closureUser: 'PAREDES NAVARRO ADRIAN' }),
+    rt('T4', [2026, 7, 30], 'XSP00027', null), // no user
+    rt('X1', [2026, 8, 4], 'XSPINSYTE01', 'OTHER PERSON'),
+    { ...ticket('U1', [2026, 8, 5]), 'Restoration group ID': 'XSP00027', 'Restoration user name': 'PAREDES NAVARRO ADRIAN' }, // no restoration date
+  ];
+  const ex = C.extractTickets([sheetFull('asignados a', rows)]);
+  const all = C.computeTeam(ex.tickets, { groups: ['XSP00025', 'XSP00027'] });
+  assert.ok(all.checks.every((c) => c.ok), JSON.stringify(all.checks.filter((c) => !c.ok)));
+  assert.equal(all.total, 5); // U1 counted even without restoration date
+  const by = Object.fromEntries(all.engineers.map((e) => [e.user, e]));
+  assert.equal(by['ARCE LETICIA'].byGroup.XSP00025.inc, 1);
+  assert.equal(by['ARCE LETICIA'].byGroup.XSP00025.ot, 1);
+  assert.equal(by['PAREDES NAVARRO ADRIAN'].total, 2);
+  assert.equal(by['PAREDES NAVARRO ADRIAN'].closedByThem, 1);
+  assert.ok(by['(sin usuario de restauración)']);
+  assert.ok(all.restorationGroups.some((g) => g.group === 'XSPINSYTE01' && !g.sortis));
+  const sep = C.computeTeam(ex.tickets, { groups: ['XSP00025', 'XSP00027'], year: 2026, month: 9 });
+  assert.ok(sep.checks.every((c) => c.ok));
+  assert.equal(sep.total, 3); // T1–T3 restored in September; T4 restored 31/08 → August; U1 has no date
+  assert.equal(sep.undated, 1);
+  const q25 = C.computeTeam(ex.tickets, { groups: ['XSP00025', 'XSP00027'], queue: 'XSP00025' });
+  assert.equal(q25.total, 2);
+  assert.ok(q25.checks.every((c) => c.ok));
+});
+
+test('Word builder: sections can be left out and are renumbered', () => {
+  let D;
+  try { D = require('docx'); } catch (e) { return; }
+  const ex = C.extractTickets([sheetFull('asignados a', [rt('A', [2026, 8, 21], 'XSP00025', 'ARCE LETICIA')])]);
+  const r = C.computeReport(ex.tickets, { weeks: [C.weekFromKey(202639)], slmGroups: [] });
+  const T = C.computeTeam(ex.tickets, { groups: ['XSP00025', 'XSP00027'] });
+  const R = require('../assets/js/docx-report.js');
+  const doc = R.buildDocument(D, C, r, { title: 'T', include: { s21: false, monthly: false }, team: { data: T, note: 'n' } }, {});
+  assert.ok(doc);
+});

@@ -65,6 +65,28 @@ The panel also shows any gestor mentioned in the description, as a hint. You can
 
 Every bar shows its total. Under each chart's legend there is a table with the number of cases per series (OTs, Inc. P1–P4, statuses, vendors…), *Total incidencias* / *Total OTs* subtotals and a *Total* row. The same tables appear under each chart in the Word report.
 
+## All details & who dealt with each ticket
+
+* **Every column of every ticket sheet** is read, including Acknowledgement date, Initiator user, Identifier 1–4, Calculated duration, Short label, Final nature, Restoration group / name / **user**, and Closure group / name / user. Rows that repeat a ticket are merged rather than dropped. If they differ (e.g. several closure groups), every value is kept and the difference is flagged.
+* **Click any Ticket ID** (data table, unresolved cases, “Sin gestor”, Sortis team) to open its detail window. It shows a *who dealt with it* timeline (opened by → acknowledged → restored by → closed by), what the tool interpreted (gestor, vendor, time to restore…), and every column exactly as written in the Excel.
+* **Extracted data** tab: a column chooser covering all columns, plus filters by restoration group and restoration user. The Excel export contains every column.
+
+## Sortis team (XSP00025 / XSP00027)
+
+The **Sortis team** tab uses **all ticket sheets of the file**. It takes the tickets whose *Restoration group ID* is one of the SLM / Sortis group IDs, and the engineer is the *Restoration user name*. Filters: year / month (by restoration date or creation date) and queue. It shows:
+
+* totals per queue;
+* a table per engineer: incidencias / OTs per queue, median time to restore, tickets also closed by the same person, first and last case;
+* charts per engineer and their evolution over time;
+* the list of tickets, filterable by engineer, with the detail window and an Excel export;
+* all restoration groups in the period, to see who else dealt with the cases.
+
+It has its own consistency checks. Tickets without a restoration date are counted under “All years” and reported, so none are lost.
+
+## Choosing what goes into Word
+
+In *Word report details → Sections to include*, tick the sections you want. Section numbering and the table of contents adapt automatically. The default selection produces exactly the same report as before. The Month / Year and Sortis team sections can be added from there or from their tabs.
+
 ## Consistency checks
 
 Every report is verified before it can be exported:

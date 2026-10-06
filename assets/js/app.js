@@ -108,11 +108,11 @@
       const next = isDark() ? 'light' : 'dark';
       document.documentElement.setAttribute('data-theme', next);
       try { localStorage.setItem('slm-theme', next); } catch (e) { /* ignore */ }
-      if (state.report) { renderCharts(); renderPeriodCharts(); }
+      if (state.report) { renderCharts(); renderPeriodCharts(); renderTeamCharts(); }
     });
     if (window.matchMedia) {
       const mq = window.matchMedia('(prefers-color-scheme: dark)');
-      const onChange = () => { if (state.report && !document.documentElement.getAttribute('data-theme')) { renderCharts(); renderPeriodCharts(); } };
+      const onChange = () => { if (state.report && !document.documentElement.getAttribute('data-theme')) { renderCharts(); renderPeriodCharts(); renderTeamCharts(); } };
       if (mq.addEventListener) mq.addEventListener('change', onChange);
     }
   }
@@ -213,8 +213,13 @@
     $('#settingsCard').hidden = false;
     $('#results').hidden = false;
     $('#emptyState').hidden = true;
+    // Every ticket sheet of the file, merged (Sortis team view + ticket details)
+    const allEx = C.extractTickets(state.sheets.filter((s) => usable.includes(s.name)), { date1904: state.date1904 });
+    state.allTickets = allEx.tickets;
+    state.byId = new Map(state.allTickets.map((t) => [t.id, t]));
     initPeriodSelectors();
     initPeriodFilter();
+    initTeamFilter();
     initDataFilters();
     recompute();
   }
@@ -281,6 +286,8 @@
     });
     renderAll();
     recomputePeriod();
+    fillTeamQueues();
+    recomputeTeam();
   }
 
   /* ------------------------------------------------------------------ */
@@ -311,7 +318,7 @@
       recomputePeriod();
     });
     $('#pMonth').addEventListener('change', recomputePeriod);
-    $('#pInWord').addEventListener('change', updateWordButton);
+    $('#pInWord').addEventListener('change', () => { $('#secPeriod').checked = $('#pInWord').checked; updateWordButton(); });
   }
 
   function recomputePeriod() {
@@ -439,7 +446,7 @@
       el('thead', null, el('tr', null, ['Ticket ID', 'Creation date', 'Week', 'Type', 'Status', 'Current action (as in the Excel)', 'Reason', 'Gestor mentioned in description', 'Description']
         .map((h) => el('th', { text: h, style: 'cursor:default' })))),
       el('tbody', null, shown.length ? shown.map((t) => el('tr', null,
-        el('td', { text: t.id, style: 'font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:600' }),
+        el('td', null, tidButton(t.id)),
         el('td', { text: C.fmtDateTime(t.created) }),
         el('td', { text: `${t.weekYear}-S${String(t.week).padStart(2, '0')}` }),
         el('td', { text: t.category === 'INC' ? 'Incidencia' : `OT (${t.type})` }),
@@ -487,11 +494,311 @@
     }
   }
 
+  /* ---------- Ticket detail window ---------- */
+
+  function findTicket(id) {
+    return (state.byId && state.byId.get(id)) || state.tickets.find((t) => t.id === id) || null;
+  }
+
+  function hoursTxt(h) {
+    if (h === null || h === undefined) return '—';
+    if (h < 1) return `${Math.round(h * 60)} min`;
+    if (h < 48) return `${h.toFixed(1)} h`;
+    return `${(h / 24).toFixed(1)} días`;
+  }
+
+  function openTicket(id) {
+    const t = findTicket(id);
+    if (!t) { toast(`Ticket ${id} not found in the file.`, true); return; }
+    const groups = new Set(slmGroups().map((g) => g.toUpperCase()));
+    const sortis = (g) => g && groups.has(g.toUpperCase());
+    $('#tdTitle').textContent = t.id;
+    const prio = t.priority.toLowerCase();
+    $('#tdBadges').replaceChildren(...[
+      el('span', { class: `badge ${t.category === 'INC' ? 'inc' : 'ot'}`, text: t.category === 'INC' ? 'Incidencia' : `OT · ${t.type}` }),
+      el('span', { class: `badge ${prio === 'p1' ? 'p1' : prio === 'p2' ? 'p2' : ''}`, text: t.priority }),
+      el('span', { class: 'badge', text: t.status }),
+      t.escalated ? el('span', { class: 'badge esc', text: `Escalada · ${t.vendor}` }) : null,
+      t.devuelto ? el('span', { class: 'badge p1', text: 'Devuelto' }) : null,
+      sortis(t.restorationGroupId) ? el('span', { class: 'badge p2', text: `Sortis · ${t.restorationGroupId}` }) : null].filter(Boolean));
+
+    const step = (title, date, who, grp, done, isSortis) => el('div', { class: `td-step${done ? ' done' : ''}${isSortis ? ' sortis' : ''}` },
+      el('div', { class: 'st-title', text: title }),
+      el('div', { class: 'st-date', text: date || '—' }),
+      el('div', { class: 'st-who', text: who || '—' }),
+      el('div', { class: 'st-grp', text: grp || '' }));
+    const hrs = t.restored !== null && t.restored >= t.created ? (t.restored - t.created) / 3600000 : null;
+    const flow = el('div', { class: 'td-flow' },
+      step('1 · Opened by', C.fmtDateTime(t.created), t.userName, [t.groupId, t.groupName].filter(Boolean).join(' · '), true, sortis(t.groupId)),
+      step('2 · Acknowledged', t.ackDate !== null ? C.fmtDateTime(t.ackDate) : '', '', '', t.ackDate !== null, false),
+      step('3 · Restored by', t.restored !== null ? `${C.fmtDateTime(t.restored)} · ${hoursTxt(hrs)}` : '', t.restorationUser,
+        [t.restorationGroupId, t.restorationGroupName].filter(Boolean).join(' · '), t.restored !== null, sortis(t.restorationGroupId)),
+      step('4 · Closed by', t.closureUser || t.closureGroups.length ? t.status : '', t.closureUser, t.closureGroups.join(' / '),
+        !t.open, t.closureGroups.some((g) => sortis(g.split(' ')[0]))));
+
+    const grid = (pairs) => el('div', { class: 'td-grid' }, pairs.flatMap(([k, v, alt]) => [
+      el('div', { class: 'k', text: k }),
+      el('div', { class: `v${v ? '' : ' empty'}` }, v || '(empty)', alt && alt.length ? el('span', { class: 'alt', text: `Other value(s) in another row of the file: ${alt.join(' / ')}` }) : null),
+    ]));
+    const ng = t.gestor ? null : C.noGestorReason(t).label;
+    const derived = grid([
+      ['Incidencia / OT', t.category === 'INC' ? 'Incidencia (Failure)' : `OT (${t.type})`],
+      ['Week (ISO) of creation', `${t.weekYear}-S${String(t.week).padStart(2, '0')}`],
+      ['Gestor (from Current action)', t.gestor || `— ${ng}`],
+      ['Problema', t.problema],
+      ['Técnico', t.tecnico],
+      ['Gestor mentioned in description', t.gestorDesc],
+      ['Third party vendor', t.vendor ? `${t.vendor}${t.escalated ? ' (escalated)' : ''}` : ''],
+      ['Time from creation to restoration', hrs === null ? '' : hoursTxt(hrs)],
+      ['Found in sheet(s)', t.sheets.join(' / ')],
+    ]);
+    const raw = grid(t.raw.filter(([k]) => k !== 'Description').map(([k, v]) => [k, v, t.rawAlt[k]]));
+    $('#tdBody').replaceChildren(
+      flow,
+      el('div', { class: 'td-sec' }, el('h4', { text: 'Interpreted by the tool' }), derived),
+      el('div', { class: 'td-sec' }, el('h4', { text: 'Description' }), el('div', { class: 'td-desc', text: t.description || '(empty)' })),
+      el('div', { class: 'td-sec' }, el('h4', { text: `All columns as in the Excel (${t.raw.length})` }), raw));
+    const dlg = $('#ticketDialog');
+    if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); } else dlg.setAttribute('open', '');
+    $('#tdBody').scrollTop = 0;
+  }
+
+  function initTicketDialog() {
+    document.addEventListener('click', (e) => {
+      const b = e.target.closest && e.target.closest('[data-tid]');
+      if (b) { e.preventDefault(); openTicket(b.dataset.tid); }
+    });
+    const dlg = $('#ticketDialog');
+    $('#tdClose').addEventListener('click', () => dlg.close());
+    dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); }); // click on the backdrop
+  }
+
+  /* ---------- Sortis team view ---------- */
+
+  const tState = { engineer: '', type: '', q: '', limit: 200 };
+
+  function initTeamFilter() {
+    const years = Array.from(new Set(state.allTickets.flatMap((t) => [t.created, t.restored].filter((x) => x !== null))
+      .map((ms) => new Date(ms).getUTCFullYear()))).sort((a, b) => b - a);
+    $('#tYear').replaceChildren(el('option', { value: '', text: 'All years' }), ...years.map((y) => el('option', { value: y, text: y })));
+    $('#tYear').value = years.length ? String(years[0]) : '';
+    fillTeamMonths();
+    fillTeamQueues();
+  }
+
+  function fillTeamMonths() {
+    const y = $('#tYear').value;
+    $('#tMonth').disabled = !y;
+    $('#tMonth').replaceChildren(el('option', { value: '', text: y ? `Todo el año ${y}` : '—' }),
+      ...(y ? C.MONTHS_ES.map((m, i) => el('option', { value: i + 1, text: m })) : []));
+  }
+
+  function fillTeamQueues() {
+    const prev = $('#tQueue').value;
+    const groups = slmGroups();
+    $('#tQueue').replaceChildren(el('option', { value: '', text: groups.join(' + ') || '—' }), ...groups.map((g) => el('option', { value: g, text: g })));
+    $('#tQueue').value = groups.includes(prev) ? prev : '';
+    $('#tGroupsLabel').textContent = `(${groups.join(' / ')})`;
+  }
+
+  function initTeamControls() {
+    $('#tYear').addEventListener('change', () => { fillTeamMonths(); recomputeTeam(); });
+    ['#tMonth', '#tBasis', '#tQueue'].forEach((id) => $(id).addEventListener('change', recomputeTeam));
+    $('#tEngineer').addEventListener('change', () => { tState.engineer = $('#tEngineer').value; tState.limit = 200; renderTeamList(); });
+    $('#tType').addEventListener('change', () => { tState.type = $('#tType').value; tState.limit = 200; renderTeamList(); });
+    let timer;
+    $('#tSearch').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { tState.q = $('#tSearch').value; tState.limit = 200; renderTeamList(); }, 250); });
+    $('#tExport').addEventListener('click', exportTeam);
+    $('#tInWord').addEventListener('change', () => { $('#secTeam').checked = $('#tInWord').checked; updateWordButton(); });
+  }
+
+  function recomputeTeam() {
+    if (!state.allTickets || !state.allTickets.length) return;
+    state.team = C.computeTeam(state.allTickets, {
+      groups: slmGroups(),
+      year: $('#tYear').value || null,
+      month: $('#tMonth').value || null,
+      basis: $('#tBasis').value,
+      queue: $('#tQueue').value,
+    });
+    renderTeam();
+    updateWordButton();
+  }
+
+  function teamNote(T) {
+    const basis = T.basis === 'created' ? 'fecha de creación' : 'fecha de restauración';
+    let t = `${T.label}: ${T.total} casos restaurados por el equipo Sortis (${T.queue || T.groups.join(' / ')}): ${T.inc} incidencias y ${T.ot} OTs, ` +
+      `por ${T.engineers.filter((e) => !e.noUser).length} ingenieros. Periodo según la ${basis}.`;
+    if (T.year && T.undated) t += ` ${T.undated} caso(s) del equipo no tienen fecha de restauración y no se pueden situar en un periodo (aparecen en “All years”).`;
+    return t;
+  }
+
+  function renderTeam() {
+    const T = state.team;
+    const fmtH = (h) => (h === null ? '—' : hoursTxt(h));
+    $('#tNote').textContent = teamNote(T);
+    const failed = T.checks.filter((c) => !c.ok);
+    const cb = $('#tChecks');
+    cb.className = `checks small-checks${failed.length ? ' fail' : ''}`;
+    cb.replaceChildren(el('div', { class: 'checks-head', text: failed.length
+      ? `✖ ${failed.length} of ${T.checks.length} checks failed: ${failed.map((c) => c.label + (c.detail ? ' — ' + c.detail : '')).join(' · ')}`
+      : `✔ All ${T.checks.length} consistency checks passed for the Sortis team view` }));
+    $('#tKpis').replaceChildren(...[
+      ['Restored by the team', T.total, T.label],
+      ['Incidencias', T.inc, `${T.total ? Math.round((T.inc / T.total) * 100) : 0}%`],
+      ['OTs', T.ot, `${T.total ? Math.round((T.ot / T.total) * 100) : 0}%`],
+      ['Engineers', T.engineers.filter((e) => !e.noUser).length, 'Restoration user name'],
+      ['Median time to restore', fmtH(T.medianHours), 'creation → restoration'],
+    ].map(([l, v, sub]) => el('div', { class: 'kpi' }, el('div', { class: 'k-label', text: l }),
+      el('div', { class: 'k-value', text: typeof v === 'number' ? v.toLocaleString('en') : v }), el('div', { class: 'k-sub', text: sub }))));
+
+    $('#tGroups').replaceChildren(el('table', { class: 'rep compact' },
+      el('thead', null, el('tr', { class: 'weeks' }, ['Cola (Restoration group)', 'Nombre', 'Incidencias', 'OTs', 'Total', 'Ingenieros'].map((h) => el('th', { text: h })))),
+      el('tbody', null, T.byGroup.map((g) => el('tr', null, el('td', { text: g.group }), el('td', { text: g.name }), el('td', { text: g.inc }),
+        el('td', { text: g.ot }), el('td', { text: g.total, style: 'font-weight:600' }), el('td', { text: g.engineers }))),
+      el('tr', { class: 'total' }, el('td', { text: 'TOTAL' }), el('td'), el('td', { text: T.inc }), el('td', { text: T.ot }), el('td', { text: T.total }), el('td')))));
+
+    const gh = T.groups.flatMap((g) => [`${g} Inc.`, `${g} OTs`]);
+    $('#tEngineers').replaceChildren(T.engineers.length ? el('table', { class: 'rep compact' },
+      el('thead', null, el('tr', { class: 'weeks' }, ['Ingeniero (Restoration user name)', ...gh, 'Total', 'Median time to restore', 'Also closed by them', 'First', 'Last'].map((h) => el('th', { text: h })))),
+      el('tbody', null, T.engineers.map((e) => el('tr', { class: e.noUser ? 'unidentified' : null },
+        el('td', null, el('button', { type: 'button', class: 'tid', style: 'font-family:inherit', text: e.user, title: 'Show this engineer’s tickets',
+          onclick: () => { tState.engineer = e.user; $('#tEngineer').value = e.user; tState.limit = 200; renderTeamList(); $('#tList').scrollIntoView({ behavior: 'smooth', block: 'start' }); } })),
+        ...T.groups.flatMap((g) => [e.byGroup[g].inc, e.byGroup[g].ot]).map((v) => el('td', { class: v === 0 ? 'zero' : null, text: v })),
+        el('td', { text: e.total, style: 'font-weight:600' }),
+        el('td', { text: fmtH(e.medianHours) }),
+        el('td', { text: e.closedByThem }),
+        el('td', { text: Number.isFinite(e.first) ? C.fmtDate(e.first) : '—' }),
+        el('td', { text: Number.isFinite(e.last) ? C.fmtDate(e.last) : '—' }))),
+      el('tr', { class: 'total' }, el('td', { text: 'TOTAL' }),
+        ...T.groups.flatMap((g) => [T.engineers.reduce((a, e) => a + e.byGroup[g].inc, 0), T.engineers.reduce((a, e) => a + e.byGroup[g].ot, 0)]).map((v) => el('td', { text: v })),
+        el('td', { text: T.total }), el('td', { text: fmtH(T.medianHours) }), el('td', { text: T.engineers.reduce((a, e) => a + e.closedByThem, 0) }), el('td'), el('td'))))
+      : el('p', { class: 'muted', text: 'No tickets restored by the team in this period.' }));
+
+    $('#tAllGroups').replaceChildren(el('table', { class: 'rep compact' },
+      el('thead', null, el('tr', { class: 'weeks' }, ['Restoration group', 'Nombre', 'Incidencias', 'OTs', 'Total', 'Users'].map((h) => el('th', { text: h })))),
+      el('tbody', null, T.restorationGroups.map((g) => el('tr', { style: g.sortis ? 'font-weight:600' : null },
+        el('td', { text: g.sortis ? `${g.group} ★` : g.group }), el('td', { text: g.name }), el('td', { text: g.inc }), el('td', { text: g.ot }),
+        el('td', { text: g.total }), el('td', { text: g.users }))))));
+
+    const prev = tState.engineer;
+    $('#tEngineer').replaceChildren(el('option', { value: '', text: 'All engineers' }), ...T.engineers.map((e) => el('option', { value: e.user, text: `${e.user} (${e.total})` })));
+    tState.engineer = T.engineers.some((e) => e.user === prev) ? prev : '';
+    $('#tEngineer').value = tState.engineer;
+    renderTeamList();
+    renderTeamCharts();
+  }
+
+  function teamEngineerSeries(T) {
+    const named = T.engineers;
+    return {
+      labels: named.map((e) => e.user),
+      series: T.groups.flatMap((g) => [
+        { name: `${g} Incidencias`, data: named.map((e) => e.byGroup[g].inc) },
+        { name: `${g} OTs`, data: named.map((e) => e.byGroup[g].ot) },
+      ]).filter((x) => x.data.some((v) => v)),
+    };
+  }
+
+  function renderTeamCharts() {
+    if (!state.team) return;
+    if (document.querySelector('[data-panel="team"]').hidden) { state.teamChartsDirty = true; return; }
+    state.teamChartsDirty = false;
+    const T = state.team;
+    const es = teamEngineerSeries(T);
+    makeChart('tchEngineers', es.labels, es.series.length ? es.series : [{ name: 'Casos', data: es.labels.map(() => 0) }], { horizontal: true });
+    makeChart('tchTrend', T.buckets.map((b) => b.label), T.trend.length ? T.trend : [{ name: 'Casos', data: T.buckets.map(() => 0) }], {});
+  }
+
+  function teamListFiltered() {
+    const T = state.team;
+    const q = tState.q.trim().toLowerCase();
+    return T.team.filter((t) => (!tState.engineer || (t.restorationUser || '(sin usuario de restauración)') === tState.engineer) &&
+      (!tState.type || t.category === tState.type) &&
+      (!q || `${t.id} ${t.action} ${t.description} ${t.closureUser} ${t.restorationUser} ${t.groupName} ${t.userName}`.toLowerCase().includes(q)));
+  }
+
+  function renderTeamList() {
+    if (!state.team) return;
+    const list = teamListFiltered();
+    const shown = list.slice(0, tState.limit);
+    $('#tListLabel').textContent = `(${list.length} of ${state.team.total})`;
+    const head = ['Ticket ID', 'Restoration date', 'Creation date', 'Type', 'Prio', 'Status', 'Restoration group', 'Restored by', 'Time to restore', 'Closed by', 'Closure group(s)', 'Opened by (group)', 'Current action'];
+    $('#tList').replaceChildren(...[
+      el('table', { class: 'data-table' },
+        el('thead', null, el('tr', null, head.map((h) => el('th', { text: h, style: 'cursor:default' })))),
+        el('tbody', null, shown.length ? shown.map((t) => {
+          const h = t.restored !== null && t.restored >= t.created ? (t.restored - t.created) / 3600000 : null;
+          return el('tr', null,
+            el('td', null, tidButton(t.id)),
+            el('td', { text: t.restored !== null ? C.fmtDateTime(t.restored) : '—' }),
+            el('td', { text: C.fmtDateTime(t.created) }),
+            el('td', { text: t.category === 'INC' ? 'Incidencia' : 'OT' }),
+            el('td', { text: t.priority }),
+            el('td', { text: t.status }),
+            el('td', { text: t.restorationGroupId }),
+            el('td', { text: t.restorationUser || '—' }),
+            el('td', { text: hoursTxt(h) }),
+            el('td', { text: t.closureUser || '—' }),
+            el('td', { text: t.closureGroups.join(' / ') || '—', title: t.closureGroups.join(' / ') }),
+            el('td', { text: [t.groupId, t.groupName].filter(Boolean).join(' · '), title: t.userName }),
+            el('td', { text: t.action || '—', title: t.action }));
+        }) : el('tr', null, el('td', { colspan: head.length, class: 'muted', text: 'No tickets match the filters.' })))),
+      list.length > shown.length ? el('button', { type: 'button', class: 'btn small more', onclick: () => { tState.limit += 400; renderTeamList(); } },
+        `Show more (${list.length - shown.length} remaining)`) : null,
+    ].filter(Boolean));
+  }
+
+  function exportTeam() {
+    if (!state.team) return;
+    try {
+      const list = teamListFiltered();
+      const head = ['Ticket ID', 'Restoration date', 'Creation date', 'Ticket type', 'Incidencia / OT', 'Processing priority', 'Status',
+        'Restoration group ID', 'Restoration group abbreviation name', 'Restoration user name', 'Hours to restore', 'Closure user name', 'Closure group(s)',
+        'Initiator - Group ID', 'Initiator - Group abbreviation name', 'Initiator - User name', 'Current action', 'Third party reference', 'Final nature', 'Short label', 'Description'];
+      const aoa = [head];
+      for (const t of list) {
+        const h = t.restored !== null && t.restored >= t.created ? Math.round(((t.restored - t.created) / 3600000) * 10) / 10 : null;
+        aoa.push([t.id, t.restored !== null ? C.toExcelSerial(t.restored) : null, C.toExcelSerial(t.created), t.type, t.category === 'INC' ? 'Incidencia' : 'OT',
+          t.priority, t.status, t.restorationGroupId, t.restorationGroupName, t.restorationUser, h, t.closureUser, t.closureGroups.join(' / '),
+          t.groupId, t.groupName, t.userName, t.action, t.thirdParty, t.finalNature, t.shortLabel, t.description.slice(0, 32000)]);
+      }
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      for (let r = 1; r < aoa.length; r++) for (const c of [1, 2]) { const ref = XLSX.utils.encode_cell({ r, c }); if (ws[ref]) ws[ref].z = 'yyyy-mm-dd hh:mm'; }
+      ws['!cols'] = head.map((h) => ({ wch: Math.min(40, Math.max(12, h.length + 2)) }));
+      ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: head.length - 1 } }) };
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Sortis team');
+      const T = state.team;
+      const eh = ['Ingeniero', ...T.groups.flatMap((g) => [`${g} Inc.`, `${g} OTs`]), 'Total', 'Median hours to restore', 'Also closed by them'];
+      const ea = [eh, ...T.engineers.map((e) => [e.user, ...T.groups.flatMap((g) => [e.byGroup[g].inc, e.byGroup[g].ot]), e.total,
+        e.medianHours === null ? null : Math.round(e.medianHours * 10) / 10, e.closedByThem])];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(ea), 'By engineer');
+      XLSX.writeFile(wb, `sortis-team-${safeFilePart(T.label)}.xlsx`, { compression: true });
+      toast(`Excel downloaded (${list.length} tickets).`);
+    } catch (err) {
+      console.error(err);
+      toast(`Could not create the Excel file: ${err && err.message ? err.message : err}`, true);
+    }
+  }
+
   function updateWordButton() {
     const weeklyFail = state.report && state.report.checks.some((c) => !c.ok);
     const periodFail = $('#pInWord').checked && state.period && state.period.checks.some((c) => !c.ok);
-    $('#btnWord').disabled = !!(weeklyFail || periodFail);
-    $('#btnWord').title = weeklyFail || periodFail ? 'Blocked: the report did not pass the consistency checks' : '';
+    const teamFail = $('#secTeam').checked && state.team && state.team.checks.some((c) => !c.ok);
+    $('#btnWord').disabled = !!(weeklyFail || periodFail || teamFail);
+    $('#btnWord').title = weeklyFail || periodFail || teamFail ? 'Blocked: the report did not pass the consistency checks' : '';
+  }
+
+  function initSectionPicker() {
+    $('#secPeriod').addEventListener('change', () => { $('#pInWord').checked = $('#secPeriod').checked; updateWordButton(); });
+    $('#secTeam').addEventListener('change', () => { $('#tInWord').checked = $('#secTeam').checked; updateWordButton(); });
+  }
+
+  function wordSections() {
+    const inc = {};
+    $$('[data-sec]').forEach((cb) => { inc[cb.dataset.sec] = cb.checked; });
+    return inc;
   }
 
   /* ------------------------------------------------------------------ */
@@ -662,7 +969,7 @@
       }) : null;
       return el('article', { class: 'pcard' },
         el('div', { class: 'pcard-head' },
-          el('span', { class: 'pcard-id', text: t.id }),
+          el('span', { class: 'pcard-id' }, tidButton(t.id)),
           el('span', { class: 'badges' },
             el('span', { class: `badge ${t.category === 'INC' ? 'inc' : 'ot'}`, text: t.category === 'INC' ? 'Incidencia' : 'OT' }),
             el('span', { class: `badge ${prio === 'p1' ? 'p1' : prio === 'p2' ? 'p2' : ''}`, text: t.priority }),
@@ -754,6 +1061,7 @@
       $$('.tab-panel').forEach((p) => { p.hidden = p.dataset.panel !== tab.dataset.tab; });
       if (tab.dataset.tab === 'monthly' && state.report && (state.chartsDirty || !state.charts.chOpened)) renderCharts();
       if (tab.dataset.tab === 'period' && state.period && (state.periodChartsDirty || !state.charts.pchOpened)) renderPeriodCharts();
+      if (tab.dataset.tab === 'team' && state.team && (state.teamChartsDirty || !state.charts.tchEngineers)) renderTeamCharts();
     };
     tabs.forEach((t, i) => {
       t.addEventListener('click', () => activate(t));
@@ -793,29 +1101,104 @@
     { key: 'tecnico', label: 'Técnico' },
   ];
 
+  // Every other column of the Excel (hidden by default in the table; all exported to Excel).
+  const listFmt = (v) => (Array.isArray(v) ? v.join(' / ') : v);
+  const DETAIL_COLUMNS = [
+    { key: 'userName', label: 'Initiator - User name' },
+    { key: 'ackDate', label: 'Acknowledgement date', fmt: (v) => C.fmtDateTime(v), date: true },
+    { key: 'identifier1', label: 'Identifier 1' },
+    { key: 'identifier2', label: 'Identifier 2' },
+    { key: 'identifier3', label: 'Identifier 3' },
+    { key: 'identifier4', label: 'Identifier 4' },
+    { key: 'restored', label: 'Restoration date', fmt: (v) => C.fmtDateTime(v), date: true },
+    { key: 'duration', label: 'Calculated ticket duration', num: true },
+    { key: 'shortLabel', label: 'Short label' },
+    { key: 'finalNature', label: 'Final nature' },
+    { key: 'restorationGroupId', label: 'Restoration group ID' },
+    { key: 'restorationGroupName', label: 'Restoration group abbreviation name' },
+    { key: 'restorationUser', label: 'Restoration user name' },
+    { key: 'closureGroups', label: 'Closure group(s)', fmt: listFmt },
+    { key: 'closureUser', label: 'Closure user name' },
+    { key: 'description', label: 'Description' },
+    { key: 'sheets', label: 'Found in sheet(s)', fmt: listFmt },
+  ];
+  const ALL_COLUMNS = [...DATA_COLUMNS, ...DETAIL_COLUMNS];
+  const DEFAULT_VISIBLE = DATA_COLUMNS.map((c) => c.key).concat(['restorationGroupId', 'restorationUser', 'closureUser']);
+
+  function visibleColumns() {
+    return ALL_COLUMNS.filter((c) => state.data.cols.has(c.key));
+  }
+
+  function loadVisibleColumns() {
+    let keys = DEFAULT_VISIBLE;
+    try {
+      const saved = JSON.parse(localStorage.getItem('slm-cols') || 'null');
+      if (Array.isArray(saved) && saved.length) keys = saved.filter((k) => ALL_COLUMNS.some((c) => c.key === k));
+    } catch (e) { /* ignore */ }
+    if (!keys.includes('id')) keys = ['id', ...keys];
+    state.data.cols = new Set(keys);
+  }
+
+  function saveVisibleColumns() {
+    try { localStorage.setItem('slm-cols', JSON.stringify(Array.from(state.data.cols))); } catch (e) { /* ignore */ }
+  }
+
+  function renderColumnPicker() {
+    const box = $('#colPick');
+    const setAll = (keys) => { state.data.cols = new Set(['id', ...keys]); saveVisibleColumns(); renderColumnPicker(); renderDataHeader(); applyDataFilters(); };
+    box.replaceChildren(
+      el('div', { class: 'cp-actions' },
+        el('button', { type: 'button', class: 'btn small', onclick: () => setAll(ALL_COLUMNS.map((c) => c.key)) }, 'All'),
+        el('button', { type: 'button', class: 'btn small', onclick: () => setAll(DEFAULT_VISIBLE) }, 'Default')),
+      ...ALL_COLUMNS.map((c) => {
+        const cb = el('input', { type: 'checkbox', checked: state.data.cols.has(c.key), disabled: c.key === 'id' });
+        cb.addEventListener('change', () => {
+          if (cb.checked) state.data.cols.add(c.key); else state.data.cols.delete(c.key);
+          saveVisibleColumns(); renderDataHeader(); applyDataFilters();
+        });
+        return el('label', null, cb, c.label);
+      }));
+  }
+
+  function renderDataHeader() {
+    $('#dataTable thead tr').replaceChildren(...visibleColumns().map((c) => el('th', {
+      'data-key': c.key, tabindex: 0, scope: 'col', title: 'Sort',
+      onclick: () => sortBy(c.key),
+      onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); sortBy(c.key); } },
+    }, c.label, el('span', { class: 'arrow' }))));
+  }
+
+  /** A Ticket ID that opens the detail window. */
+  function tidButton(id) {
+    return el('button', { type: 'button', class: 'tid', 'data-tid': id, title: 'Show every detail of this ticket', text: id });
+  }
+
   function initDataFilters() {
     const statuses = Array.from(new Set(state.tickets.map((t) => t.status))).sort();
     $('#fStatus').replaceChildren(el('option', { value: '', text: 'All statuses' }), ...statuses.map((s) => el('option', { value: s, text: s })));
     const years = Array.from(new Set(state.tickets.map((t) => new Date(t.created).getUTCFullYear()))).sort((a, b) => b - a);
     $('#fYear').replaceChildren(el('option', { value: '', text: 'All years' }), ...years.map((y) => el('option', { value: y, text: y })));
-    Object.assign(state.data, { query: '', type: '', status: '', vendor: '', year: '', page: 0 });
+    const rgroups = Array.from(new Set(state.tickets.map((t) => t.restorationGroupId).filter(Boolean))).sort();
+    $('#fRGroup').replaceChildren(el('option', { value: '', text: 'All restoration groups' }), el('option', { value: '-', text: '(no restoration group)' }),
+      ...rgroups.map((g) => el('option', { value: g, text: g })));
+    const rusers = Array.from(new Set(state.tickets.map((t) => t.restorationUser).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'es'));
+    $('#fRUser').replaceChildren(el('option', { value: '', text: 'All restoration users' }), el('option', { value: '-', text: '(no restoration user)' }),
+      ...rusers.map((u) => el('option', { value: u, text: u })));
+    Object.assign(state.data, { query: '', type: '', status: '', vendor: '', year: '', rgroup: '', ruser: '', page: 0 });
     $('#dataSearch').value = '';
-    ['#fType', '#fStatus', '#fVendor', '#fYear'].forEach((s) => { $(s).value = ''; });
+    ['#fType', '#fStatus', '#fVendor', '#fYear', '#fRGroup', '#fRUser'].forEach((s) => { $(s).value = ''; });
   }
 
   function initDataTable() {
-    const tr = $('#dataTable thead tr');
-    tr.replaceChildren(...DATA_COLUMNS.map((c) => el('th', {
-      'data-key': c.key, tabindex: 0, scope: 'col', title: 'Sort',
-      onclick: () => sortBy(c.key),
-      onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); sortBy(c.key); } },
-    }, c.label, el('span', { class: 'arrow' }))));
+    loadVisibleColumns();
+    renderColumnPicker();
+    renderDataHeader();
     let t;
     $('#dataSearch').addEventListener('input', () => {
       clearTimeout(t);
       t = setTimeout(() => { state.data.query = $('#dataSearch').value; state.data.page = 0; applyDataFilters(); }, 200);
     });
-    [['#fType', 'type'], ['#fStatus', 'status'], ['#fVendor', 'vendor'], ['#fYear', 'year']].forEach(([sel, k]) => {
+    [['#fType', 'type'], ['#fStatus', 'status'], ['#fVendor', 'vendor'], ['#fYear', 'year'], ['#fRGroup', 'rgroup'], ['#fRUser', 'ruser']].forEach(([sel, k]) => {
       $(sel).addEventListener('change', () => { state.data[k] = $(sel).value; state.data.page = 0; applyDataFilters(); });
     });
     $('#pgPrev').addEventListener('click', () => { if (state.data.page > 0) { state.data.page--; renderDataPage(); } });
@@ -842,8 +1225,12 @@
       if (d.vendor === '-' && t.vendor) return false;
       if (d.vendor && d.vendor !== '-' && t.vendor !== d.vendor) return false;
       if (d.year && String(new Date(t.created).getUTCFullYear()) !== d.year) return false;
+      if (d.rgroup === '-' && t.restorationGroupId) return false;
+      if (d.rgroup && d.rgroup !== '-' && t.restorationGroupId !== d.rgroup) return false;
+      if (d.ruser === '-' && t.restorationUser) return false;
+      if (d.ruser && d.ruser !== '-' && t.restorationUser !== d.ruser) return false;
       if (q) {
-        const hay = `${t.id} ${t.thirdParty} ${t.groupId} ${t.groupName} ${t.action} ${t.userName} ${t.status} ${t.type}`.toLowerCase();
+        const hay = `${t.id} ${t.thirdParty} ${t.groupId} ${t.groupName} ${t.action} ${t.userName} ${t.status} ${t.type} ${t.restorationGroupId} ${t.restorationUser} ${t.closureUser} ${(t.closureGroups || []).join(' ')}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -851,7 +1238,7 @@
     const k = d.sortKey;
     const dir = d.sortDir;
     list = list.slice().sort((a, b) => {
-      const va = a[k], vb = b[k];
+      const va = Array.isArray(a[k]) ? a[k].join(' / ') : a[k], vb = Array.isArray(b[k]) ? b[k].join(' / ') : b[k];
       if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * dir;
       return String(va ?? '').localeCompare(String(vb ?? ''), 'es', { numeric: true }) * dir;
     });
@@ -873,13 +1260,15 @@
     const start = d.page * PAGE_SIZE;
     const rows = d.filtered.slice(start, start + PAGE_SIZE);
     const tbody = $('#dataTable tbody');
+    const cols = visibleColumns();
     if (!rows.length) {
-      tbody.replaceChildren(el('tr', null, el('td', { colspan: DATA_COLUMNS.length, class: 'muted', text: 'No tickets match the filters.' })));
+      tbody.replaceChildren(el('tr', null, el('td', { colspan: cols.length, class: 'muted', text: 'No tickets match the filters.' })));
     } else {
-      tbody.replaceChildren(...rows.map((t) => el('tr', null, DATA_COLUMNS.map((c) => {
+      tbody.replaceChildren(...rows.map((t) => el('tr', null, cols.map((c) => {
+        if (c.key === 'id') return el('td', null, tidButton(t.id));
         const v = c.fmt ? c.fmt(t[c.key]) : t[c.key];
         const s = v === null || v === undefined ? '' : String(v);
-        return el('td', { text: s, title: s.length > 40 ? s : null });
+        return el('td', { text: s, title: s.length > 40 ? s.slice(0, 1500) : null });
       }))));
     }
     $('#dataCount').textContent = `${total.toLocaleString('en')} of ${state.tickets.length.toLocaleString('en')} tickets`;
@@ -920,6 +1309,10 @@
     if (state.report.checks.some((c) => !c.ok)) { toast('The report did not pass the consistency checks — see the list above.', true); return; }
     const includePeriod = $('#pInWord').checked && state.period && state.period.hasData;
     if (includePeriod && state.period.checks.some((c) => !c.ok)) { toast('The Month / Year section did not pass its consistency checks.', true); return; }
+    const includeTeam = $('#secTeam').checked && state.team && state.team.total > 0;
+    if (includeTeam && state.team.checks.some((c) => !c.ok)) { toast('The Sortis team section did not pass its consistency checks.', true); return; }
+    const sections = wordSections();
+    if (!Object.values(sections).some(Boolean) && !includePeriod && !includeTeam) { toast('Select at least one section for the Word report.', true); return; }
     setBusy(true, 'Building the Word report…');
     await nextFrame();
     try {
@@ -970,6 +1363,19 @@
         };
         await nextFrame();
       }
+      let teamCharts = null;
+      let teamTables = null;
+      if (includeTeam) {
+        const T = state.team;
+        const es = teamEngineerSeries(T);
+        teamCharts = {
+          engineers: es.series.length ? CH.renderPng(CH.barConfig(es.labels, es.series, { static: true, horizontal: true, title: `Casos restaurados por ingeniero — ${T.label}` }),
+            1000, Math.max(300, 90 + es.labels.length * 40)) : null,
+          trend: T.trend.length ? CH.renderPng(CH.barConfig(T.buckets.map((b) => b.label), T.trend, { static: true, title: `Evolución por ingeniero — ${T.label}` }), 1000, 460) : null,
+        };
+        teamTables = { trend: T.trend.length ? CH.chartTable(T.buckets.map((b) => b.label), T.trend) : null };
+        await nextFrame();
+      }
       const logo = $('#includeLogo').checked ? await loadLogo() : null;
       const groups = slmGroups();
       const revDate = $('#revDate').value ? $('#revDate').value.split('-').reverse().join('.') : '';
@@ -991,7 +1397,9 @@
         dataUntil: state.summary.dataUntil,
       };
       if (includePeriod) meta.period = { data: state.period, note: periodNote(state.period), gestorCaption: gestorCaption(state.period) };
-      const doc = SLMDocx.buildDocument(window.docx, C, r, meta, { logo, charts, periodCharts, periodTables });
+      if (includeTeam) meta.team = { data: state.team, note: teamNote(state.team) };
+      meta.include = sections;
+      const doc = SLMDocx.buildDocument(window.docx, C, r, meta, { logo, charts, periodCharts, periodTables, teamCharts, teamTables });
       const blob = await docx.Packer.toBlob(doc);
       const name = `INFORME-SLM-OSS-Sortis-${r.reportWeek.year}-Semana${String(r.reportWeek.week).padStart(2, '0')}-${safeFilePart(r.periodLabel.replace(/ \/ /g, '-'))}.docx`;
       downloadBlob(blob, name);
@@ -1014,6 +1422,7 @@
       cols.push({ key: 'escalated', label: 'Escalada', fmt: (v) => (v ? 'Sí' : 'No') });
       cols.push({ key: 'devuelto', label: 'Devuelta', fmt: (v) => (v ? 'Sí' : 'No') });
       cols.push({ key: 'restored', label: 'Restoration date', date: true });
+      for (const c of DETAIL_COLUMNS) if (c.key !== 'restored') cols.push(c.date ? { key: c.key, label: c.label, date: true } : c);
       const aoa = [cols.map((c) => c.label)];
       // export what is currently filtered in the "Extracted data" tab (all tickets when no filter)
       const list = hasDataFilter() ? state.data.filtered : state.tickets;
@@ -1022,6 +1431,7 @@
           const v = t[c.key];
           if (c.date) return v === null || v === undefined ? null : C.toExcelSerial(v);
           if (c.fmt) return c.fmt(v);
+          if (typeof v === 'string' && v.length > 32000) return v.slice(0, 32000);
           return v === '' ? null : v;
         }));
       }
@@ -1052,7 +1462,7 @@
 
   function hasDataFilter() {
     const d = state.data;
-    return !!(d.query.trim() || d.type || d.status || d.vendor || d.year);
+    return !!(d.query.trim() || d.type || d.status || d.vendor || d.year || d.rgroup || d.ruser);
   }
 
   /** Second sheet with the weekly report tables. */
@@ -1105,6 +1515,9 @@
     initPendingFilter();
     initDataTable();
     initPeriodControls();
+    initTeamControls();
+    initTicketDialog();
+    initSectionPicker();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

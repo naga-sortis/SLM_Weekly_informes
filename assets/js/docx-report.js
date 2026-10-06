@@ -225,103 +225,129 @@
       new D.TableRow({ children: [rev.version, rev.date, rev.author, rev.supervisor, rev.comments].map((v, i) => cell(v || '', { width: RW[i] })) }),
     ], RW));
 
-    /* ---------- table of contents (static) ---------- */
+    /* ---------- table of contents (built at the end from the headings actually included) ---------- */
     children.push(new D.Paragraph({ children: [new D.PageBreak()] }));
     children.push(text('Tabla de contenidos', { bold: true, size: 28, color: ORANGE }, { spacing: { after: 200 } }));
-    const toc = [
-      ['1', 'INTRODUCCIÓN', 0], ['2', 'DETALLE SEMANAL', 0], ['2.1', 'Casos tratados', 1], ['2.2', 'Nº Casos por gestor', 1],
-      ['2.3', 'Casos sin resolver', 1], ['2.4', 'Detalle de los casos sin resolver', 1], ['2.5', 'Incidencias destacadas', 1],
-      ['2.6', 'Otros trabajos a destacar', 1], ['3', 'DETALLE MENSUAL', 0], ['3.1', 'Casos abiertos', 1], ['3.2', 'Casos resueltos', 1],
-      ['3.3', 'Casos escalados', 1], ['3.4', 'Estado de los casos', 1],
-    ];
-    if (meta.period && meta.period.data) {
-      toc.push([`4`, `RESUMEN DEL PERIODO: ${meta.period.data.label.toUpperCase()}`, 0], ['4.1', 'Casos abiertos y resueltos', 1],
-        ['4.2', 'Estado de los casos', 1], ['4.3', 'Casos escalados por fabricante', 1], ['4.4', 'Casos por gestor', 1]);
-    }
-    for (const [num, title, lvl] of toc) {
-      children.push(para([run(`${num}  `, { bold: lvl === 0 }), run(title, { bold: lvl === 0 })], { indent: { left: lvl * 400 }, spacing: { after: 60 } }));
+    const tocAt = children.length;
+    const tocEntries = [];
+    const num = [0, 0, 0];
+    const secNum = {};
+    // Auto-numbered heading (levels 1–3); levels 1–2 are listed in the table of contents.
+    const H = (level, title, key) => {
+      num[level - 1]++;
+      for (let i = level; i < 3; i++) num[i] = 0;
+      const nb = num.slice(0, level).join('.');
+      if (key) secNum[key] = nb;
+      if (level <= 2) tocEntries.push([nb, title, level - 1]);
+      return (level === 1 ? h1 : level === 2 ? h2 : h3)(`${nb} ${title}`);
+    };
+    // Which parts of the report to include (everything by default).
+    const inc = { intro: true, s21: true, s22: true, s23: true, s24: true, s25: true, s26: true, monthly: true, ...(meta.include || {}) };
+    let needBreak = true; // the first section after the table of contents starts on a new page
+    const startTop = (forceBreak) => {
+      if (forceBreak || needBreak) children.push(new D.Paragraph({ children: [new D.PageBreak()] }));
+      needBreak = false;
+    };
+
+    /* ---------- Introducción ---------- */
+    if (inc.intro) {
+      startTop(true);
+      children.push(H(1, 'INTRODUCCIÓN'));
+      children.push(text(
+        `El presente documento recoge la actividad del servicio SLM-OSS (${meta.subtitle || 'Gestores Propietarios'}) ` +
+        `correspondiente a la ${weekTitle.toLowerCase()} (${weekDates}, ${monthName})` +
+        (n > 2 ? `, junto con la evolución de las semanas ${weeks[0].week} a ${weeks[n - 2].week} (desde el ${C.fmtDate(weeks[0].start)}).`
+          : n === 2 ? `, junto con la evolución de la semana ${weeks[0].week} (desde el ${C.fmtDate(weeks[0].start)}).` : '.') +
+        ' Cada semana refleja la situación de los casos al cierre de esa semana.', { size: 21 }, { spacing: { after: 120 } }));
+      children.push(text(
+        'Las tablas y gráficos presentados en este informe tienen como base el fichero de BRISE que nos envía semanalmente el CC – OSS. ' +
+        `Datos disponibles hasta el ${C.fmtDateTime(meta.dataUntil)}.` +
+        (report.partialWeek ? ` La semana ${rw.week} se presenta con los datos disponibles a esa fecha.` : ''), { size: 21 }, { spacing: { after: 120 } }));
     }
 
-    /* ---------- 1 Introducción ---------- */
-    children.push(new D.Paragraph({ children: [new D.PageBreak()] }));
-    children.push(h1('1 INTRODUCCIÓN'));
-    children.push(text(
-      `El presente documento recoge la actividad del servicio SLM-OSS (${meta.subtitle || 'Gestores Propietarios'}) ` +
-      `correspondiente a la ${weekTitle.toLowerCase()} (${weekDates}, ${monthName})` +
-      (n > 1 ? `, junto con la evolución de las semanas ${weeks[0].week} a ${weeks[n - 2].week} (desde el ${C.fmtDate(weeks[0].start)}).` : '.') +
-      ' Cada semana refleja la situación de los casos al cierre de esa semana.', { size: 21 }, { spacing: { after: 120 } }));
-    children.push(text(
-      'Las tablas y gráficos presentados en este informe tienen como base el fichero de BRISE que nos envía semanalmente el CC – OSS. ' +
-      `Datos disponibles hasta el ${C.fmtDateTime(meta.dataUntil)}.` +
-      (report.partialWeek ? ` La semana ${rw.week} se presenta con los datos disponibles a esa fecha.` : ''), { size: 21 }, { spacing: { after: 120 } }));
-
-    /* ---------- 2 Detalle semanal ---------- */
-    children.push(h1('2 DETALLE SEMANAL'));
-    children.push(h2('2.1 Casos tratados'));
-    children.push(dualTable('CASOS NUEVOS SEMANA', newRows), spacer());
-    children.push(dualTable('CASOS DEL BACKLOG NO ESCALADOS', backlogRows('backlogNoEsc')), spacer());
-    children.push(dualTable('CASOS DEL BACKLOG ESCALADOS', backlogRows('backlogEsc')), spacer());
-    if ((images.charts || {}).weekly) {
-      const img = images.charts.weekly.bar;
-      const scale = Math.min(1, 620 / img.width);
-      children.push(para(new D.ImageRun({ type: 'png', data: img.bytes, transformation: { width: Math.round(img.width * scale), height: Math.round(img.height * scale) } }),
-        { alignment: D.AlignmentType.CENTER, spacing: { after: 80 } }));
-      const dt = chartDataTable(images.charts.weekly.table);
-      if (dt) children.push(dt, spacer(160));
+    /* ---------- Detalle semanal ---------- */
+    if (inc.s21 || inc.s22 || inc.s23 || inc.s24 || inc.s25 || inc.s26) {
+      startTop(false);
+      children.push(H(1, 'DETALLE SEMANAL'));
     }
-    children.push(text('Las tablas y gráficos presentados en este informe tienen como base el fichero de BRISE que nos envía semanalmente el CC – OSS',
-      { italics: true, size: 17, color: '606060' }));
-
-    children.push(h2('2.2 Nº Casos por gestor'));
-    if (report.gestores.length) {
-      children.push(gestorTable());
-      const notes = ['Incidencias nuevas de cada semana agrupadas por el gestor indicado en la acción actual (GESTOR - PROBLEMA - TÉCNICO); el total de cada semana coincide con “Nuevos durante la semana” de la tabla 2.1.'];
-      if (report.gestorUnidentified) notes.push(`“Sin gestor identificado”: incidencias cuya acción actual no indica gestor (técnico trabajando, sin acción o devueltas).`);
-      if (report.gestorInferred) notes.push(`${report.gestorInferred} incidencia(s) sin gestor en la acción actual se han asignado según el gestor citado en su descripción.`);
-      children.push(text(notes.join(' '), { italics: true, size: 17, color: '606060' }, { spacing: { before: 80 } }));
-    } else {
-      children.push(text('No hay incidencias nuevas en las semanas del informe.', { italics: true }));
-    }
-    children.push(spacer());
-
-    children.push(h2('2.3 Casos sin resolver'));
-    children.push(dualTable('CASOS SIN RESOLVER', unresolvedRows), spacer());
-
-    children.push(h2('2.4 Detalle de los casos sin resolver'));
-    children.push(text(`Casos pendientes al cierre de la ${weekTitle.toLowerCase()} (${C.fmtDateTime(report.asOf)}): ${report.pending.length}.`, { size: 20 }, { spacing: { after: 120 } }));
-    if (!report.pending.length) {
-      children.push(text('No hay casos sin resolver al cierre del periodo.', { italics: true }));
-    }
-    for (const t of report.pending) {
-      const queue = t.restorationGroupId || (t.category === 'INC' ? meta.queueInc : meta.queueOt) || '';
-      const lines = [
-        ['TicketID', t.id],
-        ['Fecha de creación', C.fmtDateTime(t.created)],
-        ['Estado', t.open ? t.status : `Current (estado actual: ${t.status})`],
-        ['Tipo', t.type],
-        ['Prioridad', t.priority],
-        ['Persona que lo inicia', t.userName],
-        ['Grupo que lo inicia', t.groupId + (t.groupName ? ` (${t.groupName})` : '')],
-        ['Acción actual', t.action],
-        ['Cola asociada', queue],
-        ['Referencia Third Party', t.thirdParty + (t.vendor && t.vendor !== 'Otro' ? ` (${t.vendor})` : '')],
-      ];
-      if (meta.includeDescription) {
-        let d = t.description || '';
-        if (d.length > 700) d = d.slice(0, 700).trimEnd() + '…';
-        lines.push(['Descripción', d.replace(/\s*\n+\s*/g, ' ')]);
+    if (inc.s21) {
+      children.push(H(2, 'Casos tratados', 's21'));
+      children.push(dualTable('CASOS NUEVOS SEMANA', newRows), spacer());
+      children.push(dualTable('CASOS DEL BACKLOG NO ESCALADOS', backlogRows('backlogNoEsc')), spacer());
+      children.push(dualTable('CASOS DEL BACKLOG ESCALADOS', backlogRows('backlogEsc')), spacer());
+      if ((images.charts || {}).weekly) {
+        const img = images.charts.weekly.bar;
+        const scale = Math.min(1, 620 / img.width);
+        children.push(para(new D.ImageRun({ type: 'png', data: img.bytes, transformation: { width: Math.round(img.width * scale), height: Math.round(img.height * scale) } }),
+          { alignment: D.AlignmentType.CENTER, spacing: { after: 80 } }));
+        const dt = chartDataTable(images.charts.weekly.table);
+        if (dt) children.push(dt, spacer(160));
       }
-      lines.forEach(([k, v], i) => {
-        children.push(para([run(`${k}: `, { bold: true, size: 19 }), run(v || '', { size: 19, bold: i === 0 })],
-          { spacing: { after: 20 }, keepNext: i < lines.length - 1, keepLines: true }));
-      });
-      children.push(spacer(160));
+      children.push(text('Las tablas y gráficos presentados en este informe tienen como base el fichero de BRISE que nos envía semanalmente el CC – OSS',
+        { italics: true, size: 17, color: '606060' }));
     }
 
-    children.push(h2('2.5 Incidencias destacadas'));
-    bulletList(meta.highlights);
-    children.push(h2('2.6 Otros trabajos a destacar'));
-    bulletList(meta.otherWork);
+    if (inc.s22) {
+      children.push(H(2, 'Nº Casos por gestor'));
+      if (report.gestores.length) {
+        children.push(gestorTable());
+        const ref = secNum.s21 ? `de la tabla ${secNum.s21}` : 'de la tabla de casos tratados';
+        const notes = [`Incidencias nuevas de cada semana agrupadas por el gestor indicado en la acción actual (GESTOR - PROBLEMA - TÉCNICO); el total de cada semana coincide con “Nuevos durante la semana” ${ref}.`];
+        if (report.gestorUnidentified) notes.push(`“Sin gestor identificado”: incidencias cuya acción actual no indica gestor (técnico trabajando, sin acción o devueltas).`);
+        if (report.gestorInferred) notes.push(`${report.gestorInferred} incidencia(s) sin gestor en la acción actual se han asignado según el gestor citado en su descripción.`);
+        children.push(text(notes.join(' '), { italics: true, size: 17, color: '606060' }, { spacing: { before: 80 } }));
+      } else {
+        children.push(text('No hay incidencias nuevas en las semanas del informe.', { italics: true }));
+      }
+      children.push(spacer());
+    }
+
+    if (inc.s23) {
+      children.push(H(2, 'Casos sin resolver'));
+      children.push(dualTable('CASOS SIN RESOLVER', unresolvedRows), spacer());
+    }
+
+    if (inc.s24) {
+      children.push(H(2, 'Detalle de los casos sin resolver'));
+      children.push(text(`Casos pendientes al cierre de la ${weekTitle.toLowerCase()} (${C.fmtDateTime(report.asOf)}): ${report.pending.length}.`, { size: 20 }, { spacing: { after: 120 } }));
+      if (!report.pending.length) {
+        children.push(text('No hay casos sin resolver al cierre del periodo.', { italics: true }));
+      }
+      for (const t of report.pending) {
+        const queue = t.restorationGroupId || (t.category === 'INC' ? meta.queueInc : meta.queueOt) || '';
+        const lines = [
+          ['TicketID', t.id],
+          ['Fecha de creación', C.fmtDateTime(t.created)],
+          ['Estado', t.open ? t.status : `Current (estado actual: ${t.status})`],
+          ['Tipo', t.type],
+          ['Prioridad', t.priority],
+          ['Persona que lo inicia', t.userName],
+          ['Grupo que lo inicia', t.groupId + (t.groupName ? ` (${t.groupName})` : '')],
+          ['Acción actual', t.action],
+          ['Cola asociada', queue],
+          ['Referencia Third Party', t.thirdParty + (t.vendor && t.vendor !== 'Otro' ? ` (${t.vendor})` : '')],
+        ];
+        if (meta.includeDescription) {
+          let d = t.description || '';
+          if (d.length > 700) d = d.slice(0, 700).trimEnd() + '…';
+          lines.push(['Descripción', d.replace(/\s*\n+\s*/g, ' ')]);
+        }
+        lines.forEach(([k, v], i) => {
+          children.push(para([run(`${k}: `, { bold: true, size: 19 }), run(v || '', { size: 19, bold: i === 0 })],
+            { spacing: { after: 20 }, keepNext: i < lines.length - 1, keepLines: true }));
+        });
+        children.push(spacer(160));
+      }
+    }
+
+    if (inc.s25) {
+      children.push(H(2, 'Incidencias destacadas'));
+      bulletList(meta.highlights);
+    }
+    if (inc.s26) {
+      children.push(H(2, 'Otros trabajos a destacar'));
+      bulletList(meta.otherWork);
+    }
 
     function bulletList(items) {
       const list = (items || []).map((s) => s.trim()).filter(Boolean);
@@ -329,54 +355,63 @@
       for (const it of list) children.push(new D.Paragraph({ children: [run(it, { size: 21 })], bullet: { level: 0 }, spacing: { after: 60 } }));
     }
 
-    /* ---------- 3 Detalle mensual ---------- */
-    children.push(new D.Paragraph({ children: [new D.PageBreak()] }));
-    children.push(h1('3 DETALLE MENSUAL'));
-    children.push(text(`Evolución de los últimos ${report.months.length} meses hasta ${trendMonth}, con datos hasta el cierre de la ${weekTitle.toLowerCase()}.`, { size: 20 }, { spacing: { after: 120 } }));
-    children.push(text(C.weekSplitText(report), { size: 20 }, { spacing: { after: 120 } }));
-    const ch = images.charts || {};
-    const intro = (what, by) => text(
-      `Gráfico de acuerdo a los casos ${what} al grupo SLM en cola Oceane ${meta.queueInc || 'XSP00025'} y OTs en cola ${meta.queueOt || 'XSP00027'}, ` +
-      `teniendo en cuenta ${by} y la evolución a lo largo de los meses.`, { size: 20 }, { spacing: { after: 120 } });
-    const addCharts = (key) => {
-      const c = ch[key];
-      if (!c) return;
-      const maxW = 620;
-      for (const img of [c.bar, c.pie]) {
-        if (!img) continue;
-        const scale = Math.min(1, maxW / img.width);
-        children.push(para(new D.ImageRun({ type: 'png', data: img.bytes, transformation: { width: Math.round(img.width * scale), height: Math.round(img.height * scale) } }),
-          { alignment: D.AlignmentType.CENTER, spacing: { after: img === c.bar && c.table ? 80 : 160 } }));
-        if (img === c.bar) { const dt = chartDataTable(c.table); if (dt) children.push(dt, spacer(160)); }
-      }
-    };
-    children.push(h2('3.1 Casos abiertos'));
-    children.push(intro('abiertos', 'la prioridad'));
-    addCharts('opened');
-    children.push(h2('3.2 Casos resueltos'));
-    children.push(intro('resueltos', 'la prioridad'));
-    addCharts('resolved');
-    children.push(h2('3.3 Casos escalados'));
-    children.push(h3('3.3.1 Casos escalados por prioridad'));
-    children.push(intro('escalados', 'la prioridad'));
-    addCharts('escalated');
-    children.push(h3('3.3.2 Casos escalados por gestor'));
-    children.push(intro('escalados', 'el gestor'));
-    addCharts('escByGestor');
-    children.push(h3('3.3.3 Casos escalados por fabricante'));
-    children.push(intro('escalados', 'el fabricante (STA- Ericsson, H- Huawei, 1- Nokia)'));
-    addCharts('escByVendor');
-    children.push(h2('3.4 Estado de los casos'));
-    children.push(intro('abiertos', 'el estado'));
-    addCharts('status');
+    /* ---------- Detalle mensual ---------- */
+    if (inc.monthly) {
+      startTop(true);
+      children.push(H(1, 'DETALLE MENSUAL'));
+      children.push(text(`Evolución de los últimos ${report.months.length} meses hasta ${trendMonth}, con datos hasta el cierre de la ${weekTitle.toLowerCase()}.`, { size: 20 }, { spacing: { after: 120 } }));
+      children.push(text(C.weekSplitText(report), { size: 20 }, { spacing: { after: 120 } }));
+      const ch = images.charts || {};
+      const intro = (what, by) => text(
+        `Gráfico de acuerdo a los casos ${what} al grupo SLM en cola Oceane ${meta.queueInc || 'XSP00025'} y OTs en cola ${meta.queueOt || 'XSP00027'}, ` +
+        `teniendo en cuenta ${by} y la evolución a lo largo de los meses.`, { size: 20 }, { spacing: { after: 120 } });
+      const addCharts = (key) => {
+        const c = ch[key];
+        if (!c) return;
+        const maxW = 620;
+        for (const img of [c.bar, c.pie]) {
+          if (!img) continue;
+          const scale = Math.min(1, maxW / img.width);
+          children.push(para(new D.ImageRun({ type: 'png', data: img.bytes, transformation: { width: Math.round(img.width * scale), height: Math.round(img.height * scale) } }),
+            { alignment: D.AlignmentType.CENTER, spacing: { after: img === c.bar && c.table ? 80 : 160 } }));
+          if (img === c.bar) { const dt = chartDataTable(c.table); if (dt) children.push(dt, spacer(160)); }
+        }
+      };
+      children.push(H(2, 'Casos abiertos'));
+      children.push(intro('abiertos', 'la prioridad'));
+      addCharts('opened');
+      children.push(H(2, 'Casos resueltos'));
+      children.push(intro('resueltos', 'la prioridad'));
+      addCharts('resolved');
+      children.push(H(2, 'Casos escalados'));
+      children.push(H(3, 'Casos escalados por prioridad'));
+      children.push(intro('escalados', 'la prioridad'));
+      addCharts('escalated');
+      children.push(H(3, 'Casos escalados por gestor'));
+      children.push(intro('escalados', 'el gestor'));
+      addCharts('escByGestor');
+      children.push(H(3, 'Casos escalados por fabricante'));
+      children.push(intro('escalados', 'el fabricante (STA- Ericsson, H- Huawei, 1- Nokia)'));
+      addCharts('escByVendor');
+      children.push(H(2, 'Estado de los casos'));
+      children.push(intro('abiertos', 'el estado'));
+      addCharts('status');
+    }
 
-    /* ---------- 4 Resumen del periodo (Month / Year filter) ---------- */
+    const imgAt = (x) => {
+      if (!x) return;
+      const scale = Math.min(1, 620 / x.width);
+      children.push(para(new D.ImageRun({ type: 'png', data: x.bytes, transformation: { width: Math.round(x.width * scale), height: Math.round(x.height * scale) } }),
+        { alignment: D.AlignmentType.CENTER, spacing: { after: 160 } }));
+    };
+
+    /* ---------- Resumen del periodo (Month / Year filter) ---------- */
     if (meta.period && meta.period.data) {
       const P = meta.period.data;
       const I = P.summary.INC, O = P.summary.OT;
       const pc = images.periodCharts || {};
-      children.push(new D.Paragraph({ children: [new D.PageBreak()] }));
-      children.push(h1(`4 RESUMEN DEL PERIODO: ${P.label.toUpperCase()}`));
+      startTop(true);
+      children.push(H(1, `RESUMEN DEL PERIODO: ${P.label.toUpperCase()}`));
       children.push(text(meta.period.note, { size: 20 }, { spacing: { after: 160 } }));
       const SW = [CONTENT_W - 3 * 1500, 1500, 1500, 1500];
       const srows = [
@@ -399,20 +434,15 @@
           cell(a + b, { width: SW[3], bold: true, fill: bold ? 'E4E7EC' : (idx % 2 ? GREY : undefined) }),
         ] })),
       ], SW), spacer(160));
-      const img = (x) => {
-        if (!x) return;
-        const scale = Math.min(1, 620 / x.width);
-        children.push(para(new D.ImageRun({ type: 'png', data: x.bytes, transformation: { width: Math.round(x.width * scale), height: Math.round(x.height * scale) } }),
-          { alignment: D.AlignmentType.CENTER, spacing: { after: 160 } }));
-      };
-      children.push(h2('4.1 Casos abiertos y resueltos'));
+      const img = imgAt;
+      children.push(H(2, 'Casos abiertos y resueltos'));
       const tbl = (k) => { const dt = chartDataTable((images.periodTables || {})[k]); if (dt) children.push(dt, spacer(160)); };
       img(pc.opened); tbl('opened'); img(pc.resolved); tbl('resolved');
-      children.push(h2('4.2 Estado de los casos'));
+      children.push(H(2, 'Estado de los casos'));
       img(pc.status); tbl('status');
-      children.push(h2('4.3 Casos escalados por fabricante'));
+      children.push(H(2, 'Casos escalados por fabricante'));
       img(pc.vendor); tbl('vendor');
-      children.push(h2('4.4 Casos por gestor'));
+      children.push(H(2, 'Casos por gestor'));
       img(pc.gestor);
       if (meta.period.gestorCaption) children.push(text(meta.period.gestorCaption, { italics: true, size: 17, color: '606060' }, { spacing: { after: 120 } }));
       const GW4 = [CONTENT_W - 3 * 1400, 1400, 1400, 1400];
@@ -431,6 +461,79 @@
       children.push(text('El gestor se obtiene de la acción actual (GESTOR - PROBLEMA - TÉCNICO); los casos sin gestor en la acción aparecen como “Sin gestor identificado”. El total coincide con los casos abiertos en el periodo.',
         { italics: true, size: 17, color: '606060' }, { spacing: { before: 80 } }));
     }
+
+    /* ---------- Equipo Sortis (restoration groups XSP00025 / XSP00027) ---------- */
+    if (meta.team && meta.team.data) {
+      const T = meta.team.data;
+      const tc = images.teamCharts || {};
+      const fmtH = (h) => (h === null || h === undefined ? '—' : (h < 10 ? h.toFixed(1) : String(Math.round(h))));
+      startTop(true);
+      children.push(H(1, `EQUIPO SORTIS (${T.groups.join(' / ')}): ${T.label.toUpperCase()}`));
+      children.push(text(meta.team.note, { size: 20 }, { spacing: { after: 160 } }));
+      children.push(H(2, 'Casos restaurados por cola'));
+      const QW = [1500, CONTENT_W - 1500 - 4 * 1250, 1250, 1250, 1250, 1250];
+      children.push(table([
+        new D.TableRow({ tableHeader: true, children: ['Cola', 'Nombre', 'Nº Incidencias', 'Nº OTs', 'Total', 'Ingenieros'].map((h, i) =>
+          cell(h, { width: QW[i], fill: i > 1 ? ORANGE : DARK, color: 'FFFFFF', bold: true, left: i < 2 })) }),
+        ...T.byGroup.map((g, idx) => new D.TableRow({ children: [g.group, g.name, g.inc, g.ot, g.total, g.engineers].map((v, i) =>
+          cell(v, { width: QW[i], left: i < 2, bold: i === 4, fill: idx % 2 ? GREY : undefined })) })),
+        new D.TableRow({ children: ['TOTAL', '', T.inc, T.ot, T.total, ''].map((v, i) => cell(v, { width: QW[i], left: i < 2, bold: true, fill: 'E4E7EC' })) }),
+      ], QW), spacer(160));
+
+      children.push(H(2, 'Casos restaurados por ingeniero'));
+      imgAt(tc.engineers);
+      const gcols = T.groups.flatMap((g) => [`${g} Inc.`, `${g} OTs`]);
+      const nc = gcols.length + 3;
+      const EW0 = Math.max(2400, CONTENT_W - nc * 900);
+      const EWc = Math.floor((CONTENT_W - EW0) / nc);
+      const EW = [EW0, ...Array(nc).fill(EWc)];
+      const sz = 15;
+      children.push(table([
+        new D.TableRow({ tableHeader: true, children: ['Ingeniero (Restoration user name)', ...gcols, 'Total', 'Mediana horas hasta restauración', 'Cerrados por el mismo usuario'].map((h, i) =>
+          cell(h, { width: EW[i], fill: i ? ORANGE : DARK, color: 'FFFFFF', bold: true, left: i === 0, size: sz })) }),
+        ...T.engineers.map((e, idx) => new D.TableRow({ children: [
+          cell(e.user, { width: EW[0], left: true, size: sz, fill: idx % 2 ? GREY : undefined, color: e.noUser ? '606060' : undefined }),
+          ...T.groups.flatMap((g) => [e.byGroup[g].inc, e.byGroup[g].ot]).map((v) => cell(v, { width: EWc, size: sz, fill: idx % 2 ? GREY : undefined, color: v === 0 ? '9AA0A6' : undefined })),
+          cell(e.total, { width: EWc, bold: true, size: sz, fill: idx % 2 ? GREY : undefined }),
+          cell(fmtH(e.medianHours), { width: EWc, size: sz, fill: idx % 2 ? GREY : undefined }),
+          cell(e.closedByThem, { width: EWc, size: sz, fill: idx % 2 ? GREY : undefined }),
+        ] })),
+        new D.TableRow({ children: [
+          cell('TOTAL', { width: EW[0], left: true, bold: true, size: sz, fill: 'E4E7EC' }),
+          ...T.groups.flatMap((g) => [T.engineers.reduce((a, e) => a + e.byGroup[g].inc, 0), T.engineers.reduce((a, e) => a + e.byGroup[g].ot, 0)])
+            .map((v) => cell(v, { width: EWc, bold: true, size: sz, fill: 'E4E7EC' })),
+          cell(T.total, { width: EWc, bold: true, size: sz, fill: 'E4E7EC' }),
+          cell(fmtH(T.medianHours), { width: EWc, bold: true, size: sz, fill: 'E4E7EC' }),
+          cell(T.engineers.reduce((a, e) => a + e.closedByThem, 0), { width: EWc, bold: true, size: sz, fill: 'E4E7EC' }),
+        ] }),
+      ], EW));
+      children.push(text('Ingeniero = “Restoration user name” del Excel. Horas desde la fecha de creación hasta la fecha de restauración (mediana).',
+        { italics: true, size: 17, color: '606060' }, { spacing: { before: 80, after: 160 } }));
+
+      if (tc.trend) {
+        children.push(H(2, 'Evolución por ingeniero'));
+        imgAt(tc.trend);
+        const dt = chartDataTable((images.teamTables || {}).trend);
+        if (dt) children.push(dt, spacer(160));
+      }
+
+      children.push(H(2, 'Grupos de restauración en el periodo (todos los casos)'));
+      const RG = T.restorationGroups.slice(0, 25);
+      const GWr = [1700, CONTENT_W - 1700 - 4 * 1150, 1150, 1150, 1150, 1150];
+      children.push(table([
+        new D.TableRow({ tableHeader: true, children: ['Grupo', 'Nombre', 'Nº Incidencias', 'Nº OTs', 'Total', 'Usuarios'].map((h, i) =>
+          cell(h, { width: GWr[i], fill: i > 1 ? ORANGE : DARK, color: 'FFFFFF', bold: true, left: i < 2 })) }),
+        ...RG.map((g, idx) => new D.TableRow({ children: [g.group, g.name, g.inc, g.ot, g.total, g.users].map((v, i) =>
+          cell(v, { width: GWr[i], left: i < 2, bold: i === 4 || g.sortis, fill: g.sortis ? 'FFF1E5' : (idx % 2 ? GREY : undefined) })) })),
+      ], GWr));
+      if (T.restorationGroups.length > RG.length) {
+        children.push(text(`Se muestran los ${RG.length} grupos con más casos de ${T.restorationGroups.length}.`, { italics: true, size: 17, color: '606060' }, { spacing: { before: 80 } }));
+      }
+    }
+
+    /* ---------- fill in the table of contents ---------- */
+    children.splice(tocAt, 0, ...tocEntries.map(([nb, title, lvl]) =>
+      para([run(`${nb}  `, { bold: lvl === 0 }), run(title, { bold: lvl === 0 })], { indent: { left: lvl * 400 }, spacing: { after: 60 } })));
 
     const footer = new D.Footer({
       children: [para([

@@ -88,7 +88,7 @@
           </select>
         </div>
         <div class="field span-2">
-          <label for="slmGroups">SLM group IDs <span class="muted">(only used for the row “Abiertas por el SLM”)</span></label>
+          <label for="slmGroups">SLM / Sortis group IDs <span class="muted">(row “Abiertas por el SLM” and the Sortis team tab)</span></label>
           <input id="slmGroups" type="text" value="XSP00025, XSP00027" autocomplete="off" spellcheck="false">
         </div>
         <div class="field span-2 checkbox">
@@ -147,6 +147,19 @@
           <div class="field span-2 checkbox">
             <label><input id="includeDesc" type="checkbox" checked> Include ticket description in “Detalle de los casos sin resolver”</label>
           </div>
+          <fieldset class="field span-4 sections-pick">
+            <legend>Sections to include in the Word report <span class="muted">(numbering adapts automatically)</span></legend>
+            <label><input type="checkbox" data-sec="intro" checked> Introducción</label>
+            <label><input type="checkbox" data-sec="s21" checked> Casos tratados (2.1)</label>
+            <label><input type="checkbox" data-sec="s22" checked> Nº casos por gestor (2.2)</label>
+            <label><input type="checkbox" data-sec="s23" checked> Casos sin resolver (2.3)</label>
+            <label><input type="checkbox" data-sec="s24" checked> Detalle de los casos sin resolver (2.4)</label>
+            <label><input type="checkbox" data-sec="s25" checked> Incidencias destacadas (2.5)</label>
+            <label><input type="checkbox" data-sec="s26" checked> Otros trabajos a destacar (2.6)</label>
+            <label><input type="checkbox" data-sec="monthly" checked> Detalle mensual (3)</label>
+            <label><input type="checkbox" id="secPeriod" checked> Month / Year summary <span class="muted">(Month / Year tab)</span></label>
+            <label><input type="checkbox" id="secTeam"> Sortis team <span class="muted">(Sortis team tab)</span></label>
+          </fieldset>
         </div>
       </details>
 
@@ -173,6 +186,7 @@
         <button role="tab" class="tab" data-tab="pending" aria-selected="false">Unresolved cases</button>
         <button role="tab" class="tab" data-tab="monthly" aria-selected="false">Charts</button>
         <button role="tab" class="tab" data-tab="period" aria-selected="false">Month / Year</button>
+        <button role="tab" class="tab" data-tab="team" aria-selected="false">Sortis team</button>
         <button role="tab" class="tab" data-tab="data" aria-selected="false">Extracted data</button>
       </nav>
 
@@ -264,6 +278,45 @@
         <div id="pNoGestorPanel" class="nogestor"></div>
       </div>
 
+      <div class="tab-panel card" data-panel="team" hidden>
+        <h3>Sortis team <span class="muted small" id="tGroupsLabel"></span></h3>
+        <p class="muted small">Tickets whose <i>Restoration group ID</i> is one of the SLM group IDs (step 2), taken from <b>all ticket sheets</b> of the file. The engineer is the <i>Restoration user name</i>. Click a Ticket ID to see every detail.</p>
+        <div class="toolbar wrap">
+          <label class="inline-label" for="tYear">Year</label>
+          <select id="tYear" aria-label="Year"></select>
+          <label class="inline-label" for="tMonth">Month</label>
+          <select id="tMonth" aria-label="Month"></select>
+          <label class="inline-label" for="tBasis">Date</label>
+          <select id="tBasis" aria-label="Date used for the period">
+            <option value="restored">Restoration date</option>
+            <option value="created">Creation date</option>
+          </select>
+          <label class="inline-label" for="tQueue">Queue</label>
+          <select id="tQueue" aria-label="Queue"></select>
+          <label class="inline-check"><input id="tInWord" type="checkbox"> Include in the Word report</label>
+        </div>
+        <p class="month-note" id="tNote"></p>
+        <div id="tChecks" class="checks small-checks"></div>
+        <div class="kpis" id="tKpis"></div>
+        <div class="table-wrap" id="tGroups"></div>
+        <h3>By engineer (Restoration user name)</h3>
+        <div class="table-wrap" id="tEngineers"></div>
+        <div class="charts">
+          <figure class="chart-card"><figcaption>Casos restaurados por ingeniero y cola</figcaption><div class="chart-box tall"><canvas id="tchEngineers"></canvas></div></figure>
+          <figure class="chart-card"><figcaption>Evolución por ingeniero</figcaption><div class="chart-box tall"><canvas id="tchTrend"></canvas></div></figure>
+        </div>
+        <h3>Tickets <span class="muted small" id="tListLabel"></span></h3>
+        <div class="toolbar wrap">
+          <select id="tEngineer" aria-label="Engineer"></select>
+          <select id="tType" aria-label="Type"><option value="">Incidencias + OTs</option><option value="INC">Incidencias</option><option value="OT">OTs</option></select>
+          <input id="tSearch" type="search" placeholder="Search ticket, action, description, closure user…" aria-label="Search team tickets">
+          <button id="tExport" type="button" class="btn small">Export to Excel</button>
+        </div>
+        <div class="table-wrap data-wrap" id="tList"></div>
+        <h3>All restoration groups in the period <span class="muted small">(who else dealt with the cases)</span></h3>
+        <div class="table-wrap" id="tAllGroups"></div>
+      </div>
+
       <div class="tab-panel card" data-panel="data" hidden>
         <h3>Extracted data</h3>
         <div class="toolbar wrap">
@@ -272,8 +325,15 @@
           <select id="fStatus" aria-label="Filter status"><option value="">All statuses</option></select>
           <select id="fVendor" aria-label="Filter vendor"><option value="">All vendors</option><option>Ericsson</option><option>Huawei</option><option>Nokia</option><option>Otro</option><option value="-">No reference</option></select>
           <select id="fYear" aria-label="Filter year"><option value="">All years</option></select>
+          <select id="fRGroup" aria-label="Filter restoration group"><option value="">All restoration groups</option></select>
+          <select id="fRUser" aria-label="Filter restoration user"><option value="">All restoration users</option></select>
+          <details class="colpick">
+            <summary class="btn small">Columns</summary>
+            <div class="colpick-menu" id="colPick"></div>
+          </details>
           <span class="muted small" id="dataCount"></span>
         </div>
+        <p class="muted small" style="margin:0 0 8px">Click a Ticket ID to see every column of the Excel for that ticket and who dealt with it.</p>
         <div class="table-wrap data-wrap">
           <table class="data-table" id="dataTable">
             <thead><tr></tr></thead>
@@ -298,6 +358,17 @@
   </main>
 
   <footer class="footer muted small">SLM Weekly Informes · runs entirely in your browser</footer>
+
+  <dialog id="ticketDialog" class="ticket-dialog" aria-labelledby="tdTitle">
+    <div class="td-head">
+      <div>
+        <h2 id="tdTitle"></h2>
+        <div class="badges" id="tdBadges"></div>
+      </div>
+      <button type="button" class="icon-btn" id="tdClose" aria-label="Close">✕</button>
+    </div>
+    <div id="tdBody"></div>
+  </dialog>
 
   <div id="toast" class="toast" role="alert" hidden></div>
 
