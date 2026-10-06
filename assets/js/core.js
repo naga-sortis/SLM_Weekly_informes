@@ -461,7 +461,8 @@
           const ms = parseDate(v, date1904);
           return [name, ms === null ? str(v) : fmtDateTime(ms)];
         }
-        return [name, str(v)];
+        // text exactly as written in the Excel (no trimming / space normalisation)
+        return [name, typeof v === 'string' ? (v.trim() ? v : '') : str(v)];
       });
 
       for (let i = header.index + 1; i < sheet.rows.length; i++) {

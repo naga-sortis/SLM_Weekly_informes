@@ -1222,6 +1222,8 @@
     [['#fType', 'type'], ['#fStatus', 'status'], ['#fVendor', 'vendor'], ['#fYear', 'year'], ['#fRGroup', 'rgroup'], ['#fRUser', 'ruser']].forEach(([sel, k]) => {
       $(sel).addEventListener('change', () => { state.data[k] = $(sel).value; state.data.page = 0; applyDataFilters(); });
     });
+    $('#btnExportAll').addEventListener('click', () => exportExcel('all'));
+    $('#btnExportFiltered').addEventListener('click', () => exportExcel('filtered'));
     $('#pgPrev').addEventListener('click', () => { if (state.data.page > 0) { state.data.page--; renderDataPage(); } });
     $('#pgNext').addEventListener('click', () => {
       const pages = Math.ceil(state.data.filtered.length / PAGE_SIZE);
@@ -1293,6 +1295,9 @@
       }))));
     }
     $('#dataCount').textContent = `${total.toLocaleString('en')} of ${state.tickets.length.toLocaleString('en')} tickets`;
+    $('#btnExportAll').textContent = `Export ALL data (${state.tickets.length.toLocaleString('en')})`;
+    $('#btnExportFiltered').textContent = `Export filtered (${total.toLocaleString('en')})`;
+    $('#btnExportFiltered').disabled = total === 0;
     $('#pgInfo').textContent = total ? `${start + 1}–${Math.min(start + PAGE_SIZE, total)} · page ${d.page + 1} of ${pages}` : '';
     $('#pgPrev').disabled = d.page === 0;
     $('#pgNext').disabled = d.page >= pages - 1;
@@ -1433,8 +1438,15 @@
     }
   }
 
-  async function exportExcel() {
+  /**
+   * mode 'auto' (top button, unchanged): filtered rows if the Extracted data tab has a filter, otherwise all.
+   * mode 'filtered': only the rows shown in the Extracted data tab.
+   * mode 'all': every ticket, ignoring filters, plus verification sheets (original rows of all sheets,
+   * checks, file information) so the analysis can be cross-checked against the source Excel.
+   */
+  async function exportExcel(mode) {
     if (!state.tickets.length) return;
+    mode = typeof mode === 'string' ? mode : 'auto';
     setBusy(true, 'Building the Excel file…');
     await nextFrame();
     try {
@@ -1446,7 +1458,7 @@
       for (const c of DETAIL_COLUMNS) if (c.key !== 'restored') cols.push(c.date ? { key: c.key, label: c.label, date: true } : c);
       const aoa = [cols.map((c) => c.label)];
       // export what is currently filtered in the "Extracted data" tab (all tickets when no filter)
-      const list = hasDataFilter() ? state.data.filtered : state.tickets;
+      const list = mode === 'all' ? state.tickets : (mode === 'filtered' || hasDataFilter() ? state.data.filtered : state.tickets);
       for (const t of list) {
         aoa.push(cols.map((c) => {
           const v = t[c.key];
@@ -1470,15 +1482,102 @@
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Tickets');
       appendReportSheet(wb);
+      if (mode === 'all') {
+        appendOriginalRowsSheet(wb);
+        appendChecksSheet(wb);
+        appendAboutSheet(wb, list.length);
+      }
       const base = state.fileName.replace(/\.[^.]+$/, '');
-      XLSX.writeFile(wb, `${safeFilePart(base) || 'tickets'}-extract.xlsx`, { compression: true });
+      const suffix = mode === 'all' ? '-extract-ALL' : (mode === 'filtered' ? '-extract-filtered' : '-extract');
+      XLSX.writeFile(wb, `${safeFilePart(base) || 'tickets'}${suffix}.xlsx`, { compression: true });
       setBusy(false, '');
-      toast(`Excel file downloaded (${list.length.toLocaleString('en')} tickets).`);
+      toast(mode === 'all'
+        ? `Excel downloaded: all ${list.length.toLocaleString('en')} tickets + original rows, checks and file information.`
+        : `Excel file downloaded (${list.length.toLocaleString('en')} tickets).`);
     } catch (err) {
       console.error(err);
       setBusy(false, '');
       toast(`Could not create the Excel file: ${err && err.message ? err.message : err}`, true);
     }
+  }
+
+  /** Every ticket of every sheet with every column exactly as in the source Excel (dates as real dates). */
+  function appendOriginalRowsSheet(wb) {
+    const tickets = state.allTickets && state.allTickets.length ? state.allTickets : state.tickets;
+    const headers = [];
+    for (const t of tickets) for (const [k] of t.raw) if (!headers.includes(k)) headers.push(k);
+    const dateCols = headers.map((h) => /date|fecha/i.test(h));
+    const aoa = [[...headers, 'Found in sheet(s)', 'Other values in repeated rows']];
+    for (const t of tickets) {
+      const m = new Map(t.raw);
+      const row = headers.map((h, i) => {
+        const v = m.get(h) ?? '';
+        if (!v) return null;
+        if (dateCols[i]) { const ms = C.parseDate(v); if (ms !== null) return C.toExcelSerial(ms); }
+        return v.length > 32000 ? v.slice(0, 32000) : v;
+      });
+      const alt = Object.entries(t.rawAlt || {}).map(([k, vs]) => `${k}: ${vs.join(' / ')}`).join(' | ');
+      row.push(t.sheets.join(' / '), alt || null);
+      aoa.push(row);
+    }
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    dateCols.forEach((isDate, c) => {
+      if (!isDate) return;
+      for (let r = 1; r < aoa.length; r++) { const ref = XLSX.utils.encode_cell({ r, c }); if (ws[ref] && ws[ref].t === 'n') ws[ref].z = 'yyyy-mm-dd hh:mm'; }
+    });
+    ws['!cols'] = aoa[0].map((h) => ({ wch: Math.min(40, Math.max(12, String(h).length + 2)) }));
+    ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: aoa[0].length - 1 } }) };
+    XLSX.utils.book_append_sheet(wb, ws, 'Original rows (all sheets)');
+  }
+
+  /** Every consistency check of the report, the Month / Year view and the Sortis team view. */
+  function appendChecksSheet(wb) {
+    const aoa = [['Area', 'Check', 'Result', 'Detail']];
+    const add = (area, checks) => (checks || []).forEach((c) => aoa.push([area, c.label, c.ok ? 'OK' : 'FAILED', c.detail || '']));
+    if (state.report) add(`Weekly report (semana ${state.report.reportWeek.week} de ${state.report.reportWeek.year})`, state.report.checks);
+    if (state.period) add(`Month / Year (${state.period.label})`, state.period.checks);
+    if (state.team) add(`Sortis team (${state.team.label})`, state.team.checks);
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 34 }, { wch: 90 }, { wch: 9 }, { wch: 60 }];
+    XLSX.utils.book_append_sheet(wb, ws, 'Checks');
+  }
+
+  /** What was read and how it was interpreted. */
+  function appendAboutSheet(wb, exported) {
+    const r = state.report;
+    const sel = $('#sheetSelect');
+    const rows = [
+      ['Source file', state.fileName],
+      ['Sheet used for the report', sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : ''],
+      ['Ticket sheets found', state.detected.filter((d) => d.ok).map((d) => `${d.name} (${d.rows} rows)`).join(' · ')],
+      ['Tickets in the report sheet (unique Ticket ID)', state.tickets.length],
+      ['Tickets in all sheets merged (unique Ticket ID)', (state.allTickets || []).length],
+      ['Tickets exported in "Tickets"', exported],
+      ['First / last creation date', `${C.fmtDateTime(state.summary.minDate)} / ${C.fmtDateTime(state.summary.maxDate)}`],
+      ['Data in the file until', C.fmtDateTime(state.summary.dataUntil)],
+      ['Export generated', new Date().toLocaleString('es-ES')],
+      [],
+      ['Report week', r ? `Semana ${r.reportWeek.week} de ${r.reportWeek.year} (${C.fmtDate(r.reportWeek.start)} – ${C.fmtDate(r.reportWeek.end - 86400000)}) · ${r.periodLabel}` : ''],
+      ['Weeks shown in tables', r ? r.weeks.map((w) => w.week).join(', ') : ''],
+      ['Trend charts', $('#monthsBack').selectedOptions[0] ? $('#monthsBack').selectedOptions[0].text : ''],
+      ['SLM / Sortis group IDs', slmGroups().join(', ')],
+      ['Gestor taken from the description', $('#inferGestor').checked ? 'Yes' : 'No'],
+      [],
+      ['Rules', ''],
+      ['Incidencia / OT', 'Ticket type “Failure” = Incidencia; every other type = OT'],
+      ['Escalada', 'Third party reference starting with STA- or CSR = Ericsson, H- = Huawei, 1- = Nokia'],
+      ['Devuelta', 'Current action = DEVUELTO'],
+      ['Resuelta', 'Status not “Current” and Restoration date before the end of the week'],
+      ['Gestor / Problema / Técnico', 'Current action split as GESTOR - PROBLEMA - TÉCNICO; spelling variants merged'],
+      ['Week', 'ISO week (Monday–Sunday) calculated from the Creation date'],
+      ['Duplicated Ticket ID rows', 'First row used for the figures; values of other rows kept in “Original rows (all sheets)”'],
+      [],
+      ['Warnings while reading the file', ''],
+      ...Array.from($('#warnings').querySelectorAll('li')).map((li) => ['', li.textContent]),
+    ];
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols'] = [{ wch: 46 }, { wch: 110 }];
+    XLSX.utils.book_append_sheet(wb, ws, 'About this export');
   }
 
   function hasDataFilter() {

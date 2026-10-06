@@ -336,6 +336,11 @@
           </details>
           <span class="muted small" id="dataCount"></span>
         </div>
+        <div class="export-bar">
+          <button id="btnExportAll" type="button" class="btn small primary" title="Every ticket, every column, ignoring the filters — plus the original rows of all sheets, all consistency checks and the file information">Export ALL data</button>
+          <button id="btnExportFiltered" type="button" class="btn small" title="Only the rows currently shown with the filters above">Export filtered</button>
+          <span class="muted small">“Export ALL data” adds sheets to cross-check the analysis: <i>Original rows (all sheets)</i>, <i>Checks</i> and <i>About this export</i>.</span>
+        </div>
         <p class="muted small" style="margin:0 0 8px">Click a Ticket ID to see every column of the Excel for that ticket and who dealt with it.</p>
         <div class="table-wrap data-wrap">
           <table class="data-table" id="dataTable">

@@ -73,7 +73,13 @@ Every bar shows its total. Under each chart's legend there is a table with the n
 
 * **Every column of every ticket sheet** is read, including Acknowledgement date, Initiator user, Identifier 1–4, Calculated duration, Short label, Final nature, Restoration group / name / **user**, and Closure group / name / user. Rows that repeat a ticket are merged rather than dropped. If they differ (e.g. several closure groups), every value is kept and the difference is flagged.
 * **Click any Ticket ID** (data table, unresolved cases, “Sin gestor”, Sortis team) to open its detail window. It shows a *who dealt with it* timeline (opened by → acknowledged → restored by → closed by), what the tool interpreted (gestor, vendor, time to restore…), and every column exactly as written in the Excel.
-* **Extracted data** tab: a column chooser covering all columns, plus filters by restoration group and restoration user. The Excel export contains every column.
+* **Extracted data** tab: a column chooser covering all columns, plus filters by restoration group and restoration user.
+  * **Export ALL data** downloads every ticket (ignoring the filters) with every column. It adds sheets to cross-check the analysis:
+    * *Informe semanal*;
+    * *Original rows (all sheets)*: every ticket of every sheet exactly as written in the Excel, the sheets it appears in, and any other values found in repeated rows;
+    * *Checks*: every consistency check with OK / FAILED;
+    * *About this export*: the file, the sheets read, counts, settings, the rules applied and any warnings.
+  * **Export filtered** downloads only the rows currently shown.
 
 ## Sortis team (XSP00025 / XSP00027)
 
