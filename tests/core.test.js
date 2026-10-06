@@ -156,3 +156,19 @@ test('Wrong "Creation week" in the file is flagged and recalculated', () => {
   assert.equal(ex.tickets[0].week, 39);
   assert.ok(ex.warnings.some((w) => w.includes('Creation week')));
 });
+
+test('A week spanning two months is reconciled with the monthly charts', () => {
+  // Week 40 of 2026: Mon 28/09 – Sun 04/10
+  const ex = C.extractTickets([sheet([
+    ticket('S1', [2026, 8, 28]), ticket('S2', [2026, 8, 30], { type: 'Work order' }),
+    ticket('O1', [2026, 9, 1]), ticket('O2', [2026, 9, 2]), ticket('O3', [2026, 9, 4], { type: 'Work order' }),
+  ])]);
+  const w = [C.weekFromKey(202639), C.weekFromKey(202640)];
+  const r = C.computeReport(ex.tickets, { weeks: w, slmGroups: [], monthsBack: 3 });
+  assert.ok(r.checks.every((c) => c.ok), JSON.stringify(r.checks.filter((c) => !c.ok)));
+  assert.equal(r.periodLabel, 'Septiembre / Octubre 2026');
+  assert.deepEqual(r.weekSplit.map((p) => [p.monthKey, p.inc, p.ot]), [[202609, 1, 1], [202610, 2, 1]]);
+  assert.equal(r.inc[1].nuevos + r.ot[1].nuevos, 5);
+  assert.match(r.monthLabels[r.monthLabels.length - 1], /^2026-10 \(hasta 04\/10\)$/);
+  assert.match(C.weekSplitText(r), /5 casos nuevos.*2 en septiembre.*3 en octubre/);
+});

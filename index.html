@@ -171,7 +171,7 @@
         <button role="tab" class="tab active" data-tab="weekly" aria-selected="true">Weekly detail</button>
         <button role="tab" class="tab" data-tab="gestor" aria-selected="false">Cases by gestor</button>
         <button role="tab" class="tab" data-tab="pending" aria-selected="false">Unresolved cases</button>
-        <button role="tab" class="tab" data-tab="monthly" aria-selected="false">Monthly charts</button>
+        <button role="tab" class="tab" data-tab="monthly" aria-selected="false">Charts</button>
         <button role="tab" class="tab" data-tab="data" aria-selected="false">Extracted data</button>
       </nav>
 
@@ -219,7 +219,13 @@
       </div>
 
       <div class="tab-panel card" data-panel="monthly" hidden>
+        <h3>Casos nuevos por semana</h3>
+        <p class="muted small">Same figures as the KPIs and “Nuevos durante la semana” in table 2.1.</p>
+        <div class="charts single">
+          <figure class="chart-card"><figcaption>Casos nuevos por semana (Incidencias y OTs)</figcaption><div class="chart-box"><canvas id="chWeekly"></canvas></div></figure>
+        </div>
         <h3>3 Detalle mensual</h3>
+        <p class="month-note" id="monthlyNote"></p>
         <div class="charts">
           <figure class="chart-card"><figcaption>3.1 Casos abiertos por prioridad</figcaption><div class="chart-box"><canvas id="chOpened"></canvas></div></figure>
           <figure class="chart-card"><figcaption>3.2 Casos resueltos por prioridad</figcaption><div class="chart-box"><canvas id="chResolved"></canvas></div></figure>

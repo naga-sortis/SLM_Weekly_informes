@@ -351,3 +351,8 @@ table.data-table tbody tr:hover td { background: var(--accent-soft); }
 .checks li.bad .ic { color: var(--err-text); }
 .checks li .det { color: var(--err-text); }
 table.rep tr.unidentified td { font-style: italic; color: var(--muted); }
+
+.charts.single { grid-template-columns: minmax(0, 1fr); margin-bottom: 8px; }
+.charts.single .chart-box { height: 260px; }
+.month-note { margin: 0 0 12px; padding: 10px 14px; border-radius: 8px; background: var(--surface-2); font-size: 13px; }
+.month-note:empty { display: none; }

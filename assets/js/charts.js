@@ -4,6 +4,7 @@
 
   const SERIES_COLORS = {
     'OTs': '#8a94a8',
+    'Incidencias': '#2e6be6',
     'Inc. P1': '#d92d20',
     'Inc. P2': '#f79009',
     'Inc. P3': '#2e6be6',

@@ -735,8 +735,27 @@
       statusData[k][idx]++;
     }
 
+    // How the report week's new cases fall into calendar months (a week can straddle two months,
+    // so the monthly charts and the weekly figures are reconciled explicitly).
+    const weekSplit = [];
+    for (let d = lastWeek.start; d < lastWeek.end; d += DAY) {
+      const mk = monthKeyOf(d);
+      let part = weekSplit.find((x) => x.monthKey === mk);
+      if (!part) { part = { monthKey: mk, from: d, to: d, inc: 0, ot: 0 }; weekSplit.push(part); }
+      part.to = d;
+    }
+    for (const t of scope) {
+      if (t.created < lastWeek.start || t.created >= lastWeek.end) continue;
+      const part = weekSplit.find((x) => x.monthKey === t.monthKey);
+      if (t.category === 'INC') part.inc++; else part.ot++;
+    }
+    const partialMonthNow = monthKeyOf(asOf) === reportMonth && monthKeyOf(asOf + DAY) === reportMonth;
+    const monthLabels = months.map((m) => (m === reportMonth && partialMonthNow ? `${monthShort(m)} (hasta ${fmtDate(asOf).slice(0, 5)})` : monthShort(m)));
+
     const report = {
       weeks,
+      weekSplit,
+      monthLabels,
       reportWeek: lastWeek,
       cutoff,
       asOf,
@@ -744,7 +763,7 @@
       partialWeek: dataUntil !== null && dataUntil < cutoff - 1000,
       periodLabel,
       reportMonth,
-      partialMonth: monthKeyOf(asOf) === reportMonth && monthKeyOf(asOf + DAY) === reportMonth,
+      partialMonth: partialMonthNow,
       inc,
       ot,
       gestores,
@@ -833,6 +852,20 @@
     const statusLast = sum(r.monthly.status.map((s) => s.data[s.data.length - 1]));
     add(statusLast === directOpened, '3.4: status chart covers every case of the month exactly once', `Chart shows ${statusLast}, data has ${directOpened}.`);
 
+    // Weekly figures vs monthly charts for the report week
+    const last = n - 1;
+    const splitTotal = r.weekSplit.reduce((a, p) => a + p.inc + p.ot, 0);
+    add(splitTotal === r.inc[last].nuevos + r.ot[last].nuevos,
+      `Week ${r.reportWeek.week}: new cases split by month (${r.weekSplit.map((p) => `${monthShort(p.monthKey)}: ${p.inc + p.ot}`).join(', ')}) add up to the week total`,
+      `Split gives ${splitTotal}, week total is ${r.inc[last].nuevos + r.ot[last].nuevos}.`);
+    const badMonth = r.weekSplit.filter((p) => {
+      const i = r.months.indexOf(p.monthKey);
+      if (i < 0) return false;
+      const bar = sum(r.monthly.opened.map((x) => x.data[i]));
+      return bar < p.inc + p.ot;
+    });
+    add(!badMonth.length, '3.1: each monthly bar includes the report-week cases of that month', `Bar too low for ${badMonth.map((p) => monthShort(p.monthKey)).join(', ')}.`);
+
     // Dates
     add(monthKeyOf(r.reportWeek.start) === r.reportMonth || monthKeyOf(r.reportWeek.end - 1) === r.reportMonth,
       `Report month (${monthLabel(r.reportMonth)}) contains the report week ${r.reportWeek.week}`, 'Month and week do not match.');
@@ -864,6 +897,23 @@
     }
     const keys = Object.keys(data);
     return keys.map((k) => ({ name: k, data: data[k] }));
+  }
+
+  /** Spanish sentence reconciling the report week with the monthly charts. */
+  function weekSplitText(r) {
+    const w = r.reportWeek;
+    const total = r.weekSplit.reduce((a, p) => a + p.inc + p.ot, 0);
+    const head = `La semana ${w.week} (${fmtDate(w.start).slice(0, 5)}–${fmtDate(w.end - DAY).slice(0, 5)}) tiene ${total} casos nuevos ` +
+      `(${r.inc[r.inc.length - 1].nuevos} incidencias y ${r.ot[r.ot.length - 1].nuevos} OTs)`;
+    let txt;
+    if (r.weekSplit.length > 1) {
+      txt = `${head}. Como la semana abarca dos meses, en los gráficos mensuales se reparten por fecha de creación: ` +
+        r.weekSplit.map((p) => `${p.inc + p.ot} en ${MONTHS_ES[(p.monthKey % 100) - 1].toLowerCase()} (${p.from === p.to ? fmtDate(p.from).slice(0, 5) : `${fmtDate(p.from).slice(0, 5)}–${fmtDate(p.to).slice(0, 5)}`}: ${p.inc} incidencias, ${p.ot} OTs)`).join(' y ') + '.';
+    } else {
+      txt = `${head}, todos ellos en ${monthLabel(r.weekSplit[0].monthKey).toLowerCase()}.`;
+    }
+    if (r.partialMonth) txt += ` El mes de ${monthLabel(r.reportMonth).toLowerCase()} incluye solo los datos hasta el ${fmtDate(r.asOf)}.`;
+    return txt;
   }
 
   /** Overall dataset facts for the UI. */
@@ -899,6 +949,6 @@
     isoWeekInfo, weekFromKey, weekRange, weeksOfMonth, weeksInIsoYear, nextWeekKey,
     monthKeyOf, monthLabel, monthShort, monthsEndingAt, prevMonthKey, nextMonthKey,
     fmtDateTime, fmtDate, toExcelSerial,
-    computeReport, summarize, weeklyForCategory, validateReport, gestorKey, periodMonthsLabel, buildGestorMatcher,
+    computeReport, summarize, weeklyForCategory, validateReport, gestorKey, periodMonthsLabel, buildGestorMatcher, weekSplitText,
   };
 });

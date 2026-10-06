@@ -231,6 +231,12 @@
     children.push(dualTable('CASOS NUEVOS SEMANA', newRows), spacer());
     children.push(dualTable('CASOS DEL BACKLOG NO ESCALADOS', backlogRows('backlogNoEsc')), spacer());
     children.push(dualTable('CASOS DEL BACKLOG ESCALADOS', backlogRows('backlogEsc')), spacer());
+    if ((images.charts || {}).weekly) {
+      const img = images.charts.weekly.bar;
+      const scale = Math.min(1, 620 / img.width);
+      children.push(para(new D.ImageRun({ type: 'png', data: img.bytes, transformation: { width: Math.round(img.width * scale), height: Math.round(img.height * scale) } }),
+        { alignment: D.AlignmentType.CENTER, spacing: { after: 120 } }));
+    }
     children.push(text('Las tablas y gráficos presentados en este informe tienen como base el fichero de BRISE que nos envía semanalmente el CC – OSS',
       { italics: true, size: 17, color: '606060' }));
 
@@ -295,6 +301,7 @@
     children.push(new D.Paragraph({ children: [new D.PageBreak()] }));
     children.push(h1('3 DETALLE MENSUAL'));
     children.push(text(`Evolución de los últimos ${report.months.length} meses hasta ${trendMonth}, con datos hasta el cierre de la ${weekTitle.toLowerCase()}.`, { size: 20 }, { spacing: { after: 120 } }));
+    children.push(text(C.weekSplitText(report), { size: 20 }, { spacing: { after: 120 } }));
     const ch = images.charts || {};
     const intro = (what, by) => text(
       `Gráfico de acuerdo a los casos ${what} al grupo SLM en cola Oceane ${meta.queueInc || 'XSP00025'} y OTs en cola ${meta.queueOt || 'XSP00027'}, ` +

@@ -488,12 +488,26 @@
     if (!panelVisible) { state.chartsDirty = true; return; }
     state.chartsDirty = false;
     const r = state.report;
-    const labels = r.months.map(C.monthShort);
+    if (state.charts.chWeekly) state.charts.chWeekly.destroy();
+    state.charts.chWeekly = new Chart(document.getElementById('chWeekly'),
+      CH.barConfig(weeklyLabels(r), weeklySeries(r), { dark: isDark() }));
+    $('#monthlyNote').textContent = C.weekSplitText(r);
     for (const [id, key, split] of CHART_DEFS) {
       if (state.charts[id]) state.charts[id].destroy();
-      const cfg = CH.barConfig(labels, r.monthly[key], { dark: isDark(), splitStacks: split });
+      const cfg = CH.barConfig(r.monthLabels, r.monthly[key], { dark: isDark(), splitStacks: split });
       state.charts[id] = new Chart(document.getElementById(id), cfg);
     }
+  }
+
+  function weeklyLabels(r) {
+    return r.weeks.map((w) => `sem. ${w.week} (${C.fmtDate(w.start).slice(0, 5)})`);
+  }
+
+  function weeklySeries(r) {
+    return [
+      { name: 'Incidencias', data: r.inc.map((x) => x.nuevos) },
+      { name: 'OTs', data: r.ot.map((x) => x.nuevos) },
+    ];
   }
 
   /* ---------- tabs ---------- */
@@ -676,7 +690,7 @@
     await nextFrame();
     try {
       const r = state.report;
-      const labels = r.months.map(C.monthShort);
+      const labels = r.monthLabels;
       const idx = r.months.length - 1;
       const monthTxt = C.monthLabel(r.reportMonth) + (r.partialMonth ? ` (hasta ${C.fmtDate(r.asOf)})` : '');
       const charts = {};
@@ -696,6 +710,10 @@
         charts[key] = { bar, pie };
         await nextFrame();
       }
+      charts.weekly = {
+        bar: CH.renderPng(CH.barConfig(weeklyLabels(r), weeklySeries(r), { static: true, title: `Casos nuevos por semana (semanas ${r.weeks[0].week}–${r.reportWeek.week})` }), 1000, 420),
+        pie: null,
+      };
       const logo = $('#includeLogo').checked ? await loadLogo() : null;
       const groups = slmGroups();
       const revDate = $('#revDate').value ? $('#revDate').value.split('-').reverse().join('.') : '';
