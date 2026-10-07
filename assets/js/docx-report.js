@@ -453,14 +453,14 @@
         new D.TableRow({ tableHeader: true, children: ['GESTOR', 'Nº Incidencias', 'Nº OTs', 'Total'].map((h, i) =>
           cell(h, { width: GW4[i], fill: i ? ORANGE : DARK, color: 'FFFFFF', bold: true, left: i === 0 })) }),
         ...P.gestores.map((g, idx) => new D.TableRow({ children: [
-          cell(g.gestor, { width: GW4[0], left: true, fill: idx % 2 ? GREY : undefined, color: g.unidentified ? '606060' : undefined }),
+          cell(g.gestor, { width: GW4[0], left: true, fill: idx % 2 ? GREY : undefined, color: g.unidentified || g.techOT ? '606060' : undefined }),
           cell(g.inc, { width: GW4[1], fill: idx % 2 ? GREY : undefined }),
           cell(g.ot, { width: GW4[2], fill: idx % 2 ? GREY : undefined }),
           cell(g.total, { width: GW4[3], bold: true, fill: idx % 2 ? GREY : undefined }),
         ] })),
         new D.TableRow({ children: ['TOTAL', ...tot].map((v, i) => cell(v, { width: GW4[i], bold: true, left: i === 0, fill: 'E4E7EC' })) }),
       ], GW4));
-      children.push(text('El gestor se obtiene de la acción actual (GESTOR - PROBLEMA - TÉCNICO); los casos sin gestor en la acción aparecen como “Sin gestor identificado”. El total coincide con los casos abiertos en el periodo.',
+      children.push(text('El gestor se obtiene de la acción actual (GESTOR - PROBLEMA - TÉCNICO); los casos con un técnico trabajando en la acción actual (p. ej. “JR - Trabajando”) se cuentan como OTs en la fila “OTs (técnico trabajando)”, y los casos sin gestor en la acción aparecen como “Sin gestor identificado”. El total coincide con los casos abiertos en el periodo.',
         { italics: true, size: 17, color: '606060' }, { spacing: { before: 80 } }));
     }
 

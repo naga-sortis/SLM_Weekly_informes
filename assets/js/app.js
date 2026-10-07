@@ -385,7 +385,7 @@
     $('#pGestor').replaceChildren(p.gestores.length ? el('table', { class: 'rep compact' },
       el('thead', null, el('tr', { class: 'weeks' }, el('th', { text: 'GESTOR' }), el('th', { text: 'Incidencias' }), el('th', { text: 'OTs' }), el('th', { text: 'Total' }))),
       el('tbody', null,
-        p.gestores.map((g) => el('tr', { class: g.unidentified ? 'unidentified' : null },
+        p.gestores.map((g) => el('tr', { class: g.unidentified ? 'unidentified' : (g.techOT ? 'techot' : null), title: g.techOT ? 'Tickets whose Current action is a technician / work status (e.g. “JR - Trabajando”): counted as OTs' : null },
           el('td', { text: g.gestor, title: g.unidentified ? 'Show these tickets' : null,
             onclick: g.unidentified ? () => $('#pNoGestorPanel').scrollIntoView({ behavior: 'smooth', block: 'start' }) : null }), el('td', { class: g.inc ? null : 'zero', text: g.inc }), el('td', { class: g.ot ? null : 'zero', text: g.ot }),
           el('td', { text: g.total, style: 'font-weight:600' }))),
@@ -407,6 +407,7 @@
     const g = p.gestorChart;
     const parts = [`Los ${g.labels.length} gestores con más casos`];
     if (g.othersCount) parts.push(`otros ${g.othersCount} gestores suman ${g.othersTotal} casos`);
+    if (g.techOTTotal) parts.push(`${g.techOTTotal} OTs con técnico trabajando en la acción actual`);
     if (g.unidentifiedTotal) parts.push(`${g.unidentifiedTotal} casos sin gestor en la acción actual`);
     return parts.join('; ') + ' (detalle completo en la tabla).';
   }
@@ -954,7 +955,7 @@
         r.weeks.map((w) => el('th', { text: `sem. ${w.week}`, title: weekLabel(w.key) })),
         el('th', { text: 'Total' }))),
       el('tbody', null,
-        r.gestores.map((g) => el('tr', { class: g.unidentified ? 'unidentified' : null },
+        r.gestores.map((g) => el('tr', { class: g.unidentified ? 'unidentified' : (g.techOT ? 'techot' : null) },
           el('td', { text: g.gestor, title: g.unidentified ? 'Show these tickets' : null,
             onclick: g.unidentified ? () => $('#noGestorPanel').scrollIntoView({ behavior: 'smooth', block: 'start' }) : null }),
           g.counts.map((v) => el('td', { class: v === 0 ? 'zero' : null, text: v })),

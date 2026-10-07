@@ -233,7 +233,11 @@ test('“Sin gestor identificado” lists every ticket with the reason', () => {
   assert.equal(C.noGestorReason(ex.tickets.find((t) => t.id === 'N1')).code, 'trabajando');
   const p = C.computePeriod(ex.tickets, { year: 2026, month: 9, slmGroups: [] });
   assert.ok(p.checks.every((c) => c.ok));
-  assert.equal(p.noGestorTickets.length, 5); // incidencias + OTs (N1 and O1 as OTs)
+  // technician-status tickets (N1, O1) are not "Sin gestor": they get their own OT row
+  assert.deepEqual(p.noGestorTickets.map((t) => t.id).sort(), ['N2', 'N3', 'N4']);
+  const tech = p.gestores.find((g) => g.gestor === C.TECH_OT);
+  assert.deepEqual([tech.inc, tech.ot, tech.total], [0, 2, 2]);
+  assert.equal(p.gestores.find((g) => g.unidentified).total, 3);
   assert.ok(p.noGestorTickets.every((t) => C.noGestorReason(t).label.length > 10));
 });
 

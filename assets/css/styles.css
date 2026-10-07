@@ -441,3 +441,5 @@ table.rep tr.unidentified td:first-child { cursor: pointer; text-decoration: und
 @media (max-width: 760px) { .td-flow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .td-grid { grid-template-columns: 140px minmax(0, 1fr); } }
 
 .export-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; }
+
+table.rep tr.techot td { font-style: italic; color: var(--muted); }
