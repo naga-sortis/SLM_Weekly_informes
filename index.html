@@ -204,7 +204,7 @@
         <details class="legend">
           <summary>How the figures are calculated</summary>
           <ul>
-            <li><b>Incidencias</b> = ticket type <i>Failure</i>; <b>OTs</b> = every other type (Work order, Information request…).</li>
+            <li><b>Incidencias</b> = ticket type <i>Failure</i>; <b>OTs</b> = every other type (Work order, Information request…). A ticket whose <i>Current action</i> is a technician / work status (e.g. “JR - Trabajando”) is always counted as an <b>OT</b>, whatever its type.</li>
             <li><b>Escalada</b> = the <i>Third party reference</i> points to a vendor: <code>STA-</code> or <code>CSR</code> Ericsson, <code>H-</code> Huawei, <code>1-</code> Nokia.</li>
             <li><b>Devuelta</b> = <i>Current action</i> is “DEVUELTO”.</li>
             <li><b>Resuelta</b> = status is not <i>Current</i> and the <i>Restoration date</i> is before the end of the week (so past weeks show the situation at the time).</li>

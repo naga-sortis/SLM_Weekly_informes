@@ -658,7 +658,10 @@
       monthKey: monthKeyOf(created),
       priority: /^P\d$/.test(prio) ? prio : (prio || 'N/D'),
       type: type || 'N/D',
-      category: categoryOf(type),
+      // A ticket whose Current action is a technician / work status ("JR - Trabajando") is an OT,
+      // whatever its ticket type; otherwise "Failure" = Incidencia and any other type = OT.
+      category: pa.kind === 'trabajando' ? 'OT' : categoryOf(type),
+      categoryByAction: pa.kind === 'trabajando' && categoryOf(type) === 'INC',
       status: status || 'N/D',
       groupId: str(get(row, 'groupId')),
       groupName: str(get(row, 'groupName')),

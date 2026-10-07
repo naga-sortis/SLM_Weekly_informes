@@ -22,7 +22,7 @@ Everything runs **in the browser**: the Excel file is never uploaded anywhere. A
 | 2 | Third party reference → vendor | `Third party reference`: `STA-` or `CSR` Ericsson, `H-` Huawei, `1-` Nokia |
 | 3 | Creation date | `Creation date` |
 | 4–6 | Creation week / month / year | `Creation week`, `Creation month`, `Creation year` |
-| 7 | Processing priority and Failure / OT | `Processing priority`, `Ticket type` (`Failure` = Incidencia, any other type = OT) |
+| 7 | Processing priority and Failure / OT | `Processing priority`, `Ticket type` (`Failure` = Incidencia, any other type = OT; a technician / work status in `Current action`, e.g. `JR - Trabajando`, = OT whatever the type) |
 | 8 | Status | `Status` |
 | 9 | Initiator group ID | `Initiator - Group ID` |
 | 10 | Initiator group abbreviation name | `Initiator - Group abbreviation name` |

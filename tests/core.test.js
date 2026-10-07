@@ -92,7 +92,8 @@ test('Gestor spelling variants are merged and counted together', () => {
     ticket('A3', [2026, 8, 22], { action: 'NFM -T - z - Leticia' }),
     ticket('A4', [2026, 8, 23], { action: 'ENM 3 - a - Leticia' }),
     ticket('A5', [2026, 8, 23], { action: 'ENM3 - b - Leticia' }),
-    ticket('A6', [2026, 8, 23], { action: 'JR - Trabajando' }),
+    ticket('A6', [2026, 8, 23], { action: 'JR - Trabajando' }), // technician status → OT
+    ticket('A7', [2026, 8, 23], { action: '' }), // empty action → incidencia without gestor
   ])]);
   const r = C.computeReport(ex.tickets, { weeks: C.weekRange(202639, 202639), slmGroups: ['XSP00025'] });
   const byName = Object.fromEntries(r.gestores.map((g) => [g.gestor, g.total]));
@@ -225,12 +226,14 @@ test('“Sin gestor identificado” lists every ticket with the reason', () => {
   ])]);
   const r = C.computeReport(ex.tickets, { weeks: [C.weekFromKey(202639)], slmGroups: [] });
   assert.ok(r.checks.every((c) => c.ok), JSON.stringify(r.checks.filter((c) => !c.ok)));
-  assert.deepEqual(r.noGestorTickets.map((t) => t.id).sort(), ['N1', 'N2', 'N3', 'N4']); // weekly 2.2 = incidencias only
+  // weekly 2.2 = incidencias only; N1 ("JR - Trabajando") is now an OT, so it is not in this list
+  assert.deepEqual(r.noGestorTickets.map((t) => t.id).sort(), ['N2', 'N3', 'N4']);
   const reasons = Object.fromEntries(r.noGestorTickets.map((t) => [t.id, C.noGestorReason(t).code]));
-  assert.deepEqual(reasons, { N1: 'trabajando', N2: 'empty', N3: 'devuelto', N4: 'cerrado' });
+  assert.deepEqual(reasons, { N2: 'empty', N3: 'devuelto', N4: 'cerrado' });
+  assert.equal(C.noGestorReason(ex.tickets.find((t) => t.id === 'N1')).code, 'trabajando');
   const p = C.computePeriod(ex.tickets, { year: 2026, month: 9, slmGroups: [] });
   assert.ok(p.checks.every((c) => c.ok));
-  assert.equal(p.noGestorTickets.length, 5); // incidencias + OTs
+  assert.equal(p.noGestorTickets.length, 5); // incidencias + OTs (N1 and O1 as OTs)
   assert.ok(p.noGestorTickets.every((t) => C.noGestorReason(t).label.length > 10));
 });
 
@@ -339,4 +342,23 @@ test('Trend charts can show one calendar year only', () => {
   assert.match(C.weekSplitText(y25), /año 2025/);
   const future = C.computeReport(ex.tickets, { weeks: w, slmGroups: [], trendYear: 2027, monthsBack: 7 });
   assert.equal(future.trendYear, null); // a year after the report week is never used
+});
+
+test('Technician / work status in Current action → counted as OT whatever the ticket type', () => {
+  const ex = C.extractTickets([sheet([
+    ticket('F1', [2026, 8, 21], { type: 'Failure', action: 'JR - Trabajando' }),
+    ticket('F2', [2026, 8, 21], { type: 'Failure', action: 'IG - Trabajando - Esperando respuesta usuario' }),
+    ticket('F3', [2026, 8, 22], { type: 'Failure', action: 'GV - ACCESO MENESES' }),
+    ticket('F4', [2026, 8, 22], { type: 'Failure', action: 'NM RM - BACKUP - Leticia' }), // gestor → stays incidencia
+    ticket('F5', [2026, 8, 22], { type: 'Failure', action: '' }), // empty → stays incidencia
+    ticket('F6', [2026, 8, 22], { type: 'Failure', action: 'DEVUELTO', status: 'Closed' }), // returned → stays incidencia
+    ticket('W1', [2026, 8, 23], { type: 'Work order', action: 'JR - Trabajando' }),
+  ])]);
+  const cat = Object.fromEntries(ex.tickets.map((t) => [t.id, t.category]));
+  assert.deepEqual(cat, { F1: 'OT', F2: 'OT', F3: 'OT', F4: 'INC', F5: 'INC', F6: 'INC', W1: 'OT' });
+  assert.deepEqual(ex.tickets.filter((t) => t.categoryByAction).map((t) => t.id).sort(), ['F1', 'F2', 'F3']);
+  assert.equal(ex.tickets.find((t) => t.id === 'F1').type, 'Failure'); // original ticket type is kept
+  const r = C.computeReport(ex.tickets, { weeks: [C.weekFromKey(202639)], slmGroups: [] });
+  assert.ok(r.checks.every((c) => c.ok), JSON.stringify(r.checks.filter((c) => !c.ok)));
+  assert.deepEqual([r.inc[0].nuevos, r.ot[0].nuevos], [3, 4]);
 });

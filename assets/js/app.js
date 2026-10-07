@@ -563,7 +563,8 @@
     ]));
     const ng = t.gestor ? null : C.noGestorReason(t).label;
     const derived = grid([
-      ['Incidencia / OT', t.category === 'INC' ? 'Incidencia (Failure)' : `OT (${t.type})`],
+      ['Incidencia / OT', t.category === 'INC' ? 'Incidencia (Failure)'
+        : (t.categoryByAction ? `OT — ticket type ${t.type}, counted as OT because “Current action” is a technician / work status` : `OT (${t.type})`)],
       ['Week (ISO) of creation', `${t.weekYear}-S${String(t.week).padStart(2, '0')}`],
       ['Gestor (from Current action)', t.gestor || `— ${ng}`],
       ['Problema', t.problema],
@@ -962,7 +963,7 @@
           el('td', { text: totals.reduce((a, b) => a + b, 0) }))));
     box.replaceChildren(table);
     const notes = [`Totals match “Nuevos durante la semana” (Incidencias) in 2.1.`];
-    if (r.gestorUnidentified) notes.push(`Across the ${r.weeks.length} week(s) shown, ${r.gestorUnidentified} incidencia(s) have no gestor in “Current action” (e.g. “JR - Trabajando”, empty or DEVUELTO) and are shown as “Sin gestor identificado”.`);
+    if (r.gestorUnidentified) notes.push(`Across the ${r.weeks.length} week(s) shown, ${r.gestorUnidentified} incidencia(s) have no gestor in “Current action” (empty, DEVUELTO or “Cerrado”; technician statuses such as “JR - Trabajando” are counted as OTs) and are shown as “Sin gestor identificado”.`);
     if (r.gestorInferred) notes.push(`${r.gestorInferred} gestor(s) were taken from the ticket description (option enabled); this is stated in the Word report.`);
     $('#gestorNote').textContent = notes.join(' ');
     renderNoGestorPanel('weekly', 'noGestorPanel', r.noGestorTickets,
@@ -997,7 +998,7 @@
             t.escalated ? el('span', { class: 'badge esc', text: `Escalada · ${t.vendor}` }) : null)),
         el('dl', null,
           el('dt', { text: 'Fecha de creación' }), el('dd', { text: C.fmtDateTime(t.created) }),
-          el('dt', { text: 'Estado' }), el('dd', { text: `${t.open ? t.status : `Current (now: ${t.status})`} · ${t.type}` }),
+          el('dt', { text: 'Estado' }), el('dd', { text: `${t.open ? t.status : `Current (now: ${t.status})`} · ${t.type}${t.categoryByAction ? ' (counted as OT: technician action)' : ''}` }),
           el('dt', { text: 'Persona que lo inicia' }), el('dd', { text: t.userName || '—' }),
           el('dt', { text: 'Grupo que lo inicia' }), el('dd', { text: [t.groupId, t.groupName].filter(Boolean).join(' · ') || '—' }),
           el('dt', { text: 'Acción actual' }), el('dd', { text: t.action || '—' }),
@@ -1142,6 +1143,7 @@
     { key: 'closureUser', label: 'Closure user name' },
     { key: 'description', label: 'Description' },
     { key: 'sheets', label: 'Found in sheet(s)', fmt: listFmt },
+    { key: 'categoryByAction', label: 'Counted as OT by Current action', fmt: (v) => (v ? 'Sí' : '') },
   ];
   const ALL_COLUMNS = [...DATA_COLUMNS, ...DETAIL_COLUMNS];
   const DEFAULT_VISIBLE = DATA_COLUMNS.map((c) => c.key).concat(['restorationGroupId', 'restorationUser', 'closureUser']);
@@ -1564,7 +1566,7 @@
       ['Gestor taken from the description', $('#inferGestor').checked ? 'Yes' : 'No'],
       [],
       ['Rules', ''],
-      ['Incidencia / OT', 'Ticket type “Failure” = Incidencia; every other type = OT'],
+      ['Incidencia / OT', 'Ticket type “Failure” = Incidencia; every other type = OT; a ticket whose Current action is a technician / work status (e.g. “JR - Trabajando”) = OT whatever its type'],
       ['Escalada', 'Third party reference starting with STA- or CSR = Ericsson, H- = Huawei, 1- = Nokia'],
       ['Devuelta', 'Current action = DEVUELTO'],
       ['Resuelta', 'Status not “Current” and Restoration date before the end of the week'],
