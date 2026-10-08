@@ -108,7 +108,70 @@ Every report is verified before it can be exported:
 * 2.3 TOTAL = the number of cases listed in 2.4, and every listed case was really pending at the cut-off.
 * The monthly charts cover every case of the month exactly once, and the report month contains the report week.
 
-Unit tests (synthetic data only) run with `node --test tests/core.test.js`. They also run in the GitHub Actions workflow before every deployment.
+Unit tests (synthetic data only) run with `npm test` (Node.js ≥ 22.13). They also run in the GitHub Actions workflow before every deployment.
+
+## Source sheets tab
+
+The first tab analyses every sheet in the workbook (Incidencias, OTs, Asignados… whatever is present) before anything else: header row, rows and unique tickets, duplicated rows, invalid dates, date range, Incidencias vs OTs, types, statuses, years, restoration groups, missing expected columns and warnings. It also shows how many tickets each pair of sheets has in common, and lets you browse, search and export the raw rows of any sheet.
+
+## Manual review of “Sin gestor identificado”
+
+In the *Sin gestor identificado* panel, each case has **Review: Incidencia / OT** buttons (also available in bulk for the filtered list and in the ticket dialog). A reviewed case:
+
+* is counted under the chosen category in every section (weekly, Month/Year, Sortis team, Word report) — the automatic category is kept and shown as “Auto”;
+* keeps your **name and the date** of the decision (column “Counted as”, ticket dialog, Excel export and Word section 2.4);
+* can be undone at any time (“Undo” restores the automatic rule).
+
+On the server the reviews are shared by the whole team and every change is logged. On GitHub Pages / file mode they are saved in this browser only.
+
+## Running on a server (team database)
+
+The same page can run on a server with a shared database of every weekly Excel. It needs **Node.js ≥ 22.13** and no other package (SQLite is built into Node).
+
+```
+npm start                       # http://<server-ip>:8080/
+```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PORT` | `8080` | port |
+| `HOST` | `0.0.0.0` | interface to bind (`127.0.0.1` behind a reverse proxy) |
+| `SLM_DB` | `data/slm-informes.sqlite` | database file |
+| `SLM_BASIC_AUTH` | — | `user:password` to require a login |
+| `SLM_MAX_UPLOAD_MB` | `300` | largest upload accepted |
+
+Weekly workflow:
+
+1. Upload the new weekly Excel. The report is computed in the browser as before, and a **preview** shows what would change in the database (new tickets, updated tickets, tickets not in this file).
+2. Type your name and click **Update database**. New rows are added, changed rows are updated (each changed field is logged with old/new value), and tickets missing from the new file are kept.
+3. **Use database** builds the report from the full history; **Import history** lists every import; **Backup** downloads a copy of the database.
+
+Notes for production:
+
+* Only the page files are served (never the database, server code or tests); security headers and a strict Content-Security-Policy are set.
+* Without `SLM_BASIC_AUTH` there is no login: restrict access with the firewall/VPN. For HTTPS put a reverse proxy (nginx, IIS, Apache) in front and bind `HOST=127.0.0.1`.
+* Back up the `data/` folder (or use the Backup button) regularly. The database contains personal data from the tickets — keep it on the server only; it is excluded from git.
+* Run it as a service, e.g. systemd:
+
+```
+[Unit]
+Description=SLM Weekly Informes
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/slm-weekly-informes
+ExecStart=/usr/bin/npm start
+Environment=PORT=8080 SLM_DB=/var/lib/slm/slm-informes.sqlite
+Restart=on-failure
+User=slm
+
+[Install]
+WantedBy=multi-user.target
+```
+
+On Windows Server use NSSM or the Task Scheduler (“At startup”) to run `npm start` in the project folder.
+
+When the page is opened from GitHub Pages or a plain static server, it detects that there is no database (the browser console shows one expected 404 for `api/health`) and works exactly as before, entirely in the browser.
 
 ## Hosting on GitHub Pages
 
@@ -127,5 +190,8 @@ assets/js/core.js        parsing, field extraction and report calculations (no D
 assets/js/charts.js      Chart.js configs and PNG rendering for Word
 assets/js/docx-report.js Word document builder
 assets/js/app.js         UI
+server/server.js         optional Node server (page + team database API)
+server/db.js             SQLite database: imports, change log, manual classifications
+tests/                   unit tests (synthetic data)
 vendor/                  SheetJS 0.20.3 (Apache-2.0), Chart.js 4 (MIT), docx 9 (MIT)
 ```

@@ -662,6 +662,7 @@
       // whatever its ticket type; otherwise "Failure" = Incidencia and any other type = OT.
       category: pa.kind === 'trabajando' ? 'OT' : categoryOf(type),
       categoryByAction: pa.kind === 'trabajando' && categoryOf(type) === 'INC',
+      classification: null, // manual review (Incidencia / OT) — see applyClassifications()
       status: status || 'N/D',
       groupId: str(get(row, 'groupId')),
       groupName: str(get(row, 'groupName')),
@@ -680,6 +681,7 @@
       resolvedAt: open ? null : (restored !== null && restored >= created ? restored : created),
     };
     t.statusBucket = statusBucket(t);
+    t.categoryAuto = t.category; // classification by the rules, before any manual review
     return t;
   }
 
@@ -1045,6 +1047,116 @@
   function noGestorReason(t) {
     const code = t.actionKind === 'gestor' ? 'unrecognised' : (NO_GESTOR_REASONS[t.actionKind] ? t.actionKind : 'unrecognised');
     return { code, label: NO_GESTOR_REASONS[code] };
+  }
+
+  /**
+   * Manual review: a person classified the ticket as Incidencia or OT. It overrides the
+   * automatic rule everywhere (tables, charts, checks, exports). Removing it restores the rule.
+   * @param {Map<string,{category:'INC'|'OT', user:string, at:string}>|Object} map
+   */
+  function applyClassifications(tickets, map) {
+    const get = (id) => (map instanceof Map ? map.get(id) : map && map[id]);
+    let applied = 0;
+    for (const t of tickets) {
+      const c = get(t.id);
+      if (c && (c.category === 'INC' || c.category === 'OT')) {
+        t.classification = { category: c.category, user: c.user || '', at: c.at || '', note: c.note || '' };
+        t.category = c.category;
+        applied++;
+      } else {
+        t.classification = null;
+        t.category = t.categoryAuto;
+      }
+    }
+    return applied;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Source sheets analysis                                              */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * What each sheet of the workbook contains, before any report logic: rows, unique tickets,
+   * duplicates, dates, types, statuses, columns, and how the ticket sheets overlap.
+   * @param {{name:string, rows:any[][]}[]} sheets
+   */
+  function analyzeSheets(sheets, opts = {}) {
+    const out = [];
+    const idsBySheet = new Map();
+    for (const sh of sheets) {
+      const header = findHeader(sh.rows);
+      const nonEmpty = sh.rows.filter((r) => Array.isArray(r) && r.some((v) => v !== null && v !== undefined && v !== '')).length;
+      if (!header) {
+        out.push({ name: sh.name, isTicketSheet: false, nonEmptyRows: nonEmpty });
+        continue;
+      }
+      const ex = extractTickets([sh], opts);
+      const map = header.map;
+      let rows = 0;
+      const seen = new Map();
+      for (let i = header.index + 1; i < sh.rows.length; i++) {
+        const r = sh.rows[i];
+        const id = r ? str(r[map.ticketId]) : '';
+        if (!id) continue;
+        rows++;
+        seen.set(id, (seen.get(id) || 0) + 1);
+      }
+      const ids = new Set(seen.keys());
+      idsBySheet.set(sh.name, ids);
+      const count = (fn) => {
+        const m = {};
+        for (const t of ex.tickets) { const k = fn(t) || '(empty)'; m[k] = (m[k] || 0) + 1; }
+        return Object.entries(m).sort((a, b) => b[1] - a[1]);
+      };
+      const headers = (sh.rows[header.index] || []).map(str).filter(Boolean);
+      const missing = Object.keys(FIELD_ALIASES).filter((f) => map[f] === undefined).map((f) => FIELD_LABELS[f]);
+      let minC = null, maxC = null;
+      for (const t of ex.tickets) {
+        if (minC === null || t.created < minC) minC = t.created;
+        if (maxC === null || t.created > maxC) maxC = t.created;
+      }
+      out.push({
+        name: sh.name,
+        isTicketSheet: true,
+        ok: missing.filter((m) => ['Ticket ID', 'Creation date', 'Ticket type', 'Status'].includes(m)).length === 0,
+        headerRow: header.index + 1,
+        rows,
+        uniqueTickets: ids.size,
+        duplicatedRows: rows - ids.size,
+        repeatedTickets: Array.from(seen.values()).filter((n) => n > 1).length,
+        invalidDates: ex.invalidDates,
+        minCreated: minC,
+        maxCreated: maxC,
+        incidencias: ex.tickets.filter((t) => t.category === 'INC').length,
+        ots: ex.tickets.filter((t) => t.category === 'OT').length,
+        otsByAction: ex.tickets.filter((t) => t.categoryByAction).length,
+        types: count((t) => t.type),
+        statuses: count((t) => t.status),
+        years: count((t) => String(t.year)).sort((a, b) => b[0].localeCompare(a[0])),
+        restorationGroups: count((t) => t.restorationGroupId).slice(0, 8),
+        columns: headers,
+        missingColumns: missing,
+        warnings: ex.warnings,
+      });
+    }
+    // overlap between ticket sheets
+    const names = Array.from(idsBySheet.keys());
+    const overlap = names.map((a) => names.map((b) => {
+      const A = idsBySheet.get(a), B = idsBySheet.get(b);
+      let n = 0;
+      for (const id of A) if (B.has(id)) n++;
+      return n;
+    }));
+    const union = new Set();
+    for (const s of idsBySheet.values()) for (const id of s) union.add(id);
+    for (const o of out) {
+      if (!o.isTicketSheet) continue;
+      const mine = idsBySheet.get(o.name);
+      let only = 0;
+      for (const id of mine) if (!names.some((n) => n !== o.name && idsBySheet.get(n).has(id))) only++;
+      o.onlyInThisSheet = only;
+    }
+    return { sheets: out, overlap: { names, matrix: overlap }, uniqueTicketsAllSheets: union.size };
   }
 
   /* ------------------------------------------------------------------ */
@@ -1433,6 +1545,6 @@
     isoWeekInfo, weekFromKey, weekRange, weeksOfMonth, weeksInIsoYear, nextWeekKey,
     monthKeyOf, monthLabel, monthShort, monthsEndingAt, prevMonthKey, nextMonthKey,
     fmtDateTime, fmtDate, toExcelSerial,
-    computeReport, summarize, weeklyForCategory, validateReport, gestorKey, periodMonthsLabel, buildGestorMatcher, weekSplitText, computePeriod, validatePeriod, periodsAvailable, noGestorReason, NO_GESTOR_REASONS, TECH_OT, computeTeam, validateTeam,
+    computeReport, summarize, weeklyForCategory, validateReport, gestorKey, periodMonthsLabel, buildGestorMatcher, weekSplitText, computePeriod, validatePeriod, periodsAvailable, noGestorReason, NO_GESTOR_REASONS, TECH_OT, applyClassifications, analyzeSheets, computeTeam, validateTeam,
   };
 });

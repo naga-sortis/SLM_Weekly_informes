@@ -21,6 +21,9 @@
     charts: {},
     pendingFilter: 'all',
     data: { query: '', type: '', status: '', vendor: '', year: '', sortKey: 'created', sortDir: -1, page: 0, filtered: [] },
+    server: null,        // team database info when the page is served by server/server.js
+    source: { kind: 'none', label: '' }, // 'file' | 'db'
+    cls: new Map(),      // manual classifications: ticket id → { category, user, at }
   };
 
   /* ------------------------------------------------------------------ */
@@ -160,28 +163,41 @@
     try {
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: 'array', cellDates: false, cellFormula: false, cellHTML: false, cellStyles: false, dense: true });
-      state.date1904 = !!(wb.Workbook && wb.Workbook.WBProps && wb.Workbook.WBProps.date1904);
-      state.sheets = wb.SheetNames.map((name) => ({
+      const date1904 = !!(wb.Workbook && wb.Workbook.WBProps && wb.Workbook.WBProps.date1904);
+      const sheets = wb.SheetNames.map((name) => ({
         name,
         rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null, blankrows: true }),
       }));
-      state.detected = C.detectSheets(state.sheets);
-      const usable = state.detected.filter((d) => d.ok);
-      if (!usable.length) {
-        const partial = state.detected.find((d) => d.header);
-        const why = partial ? `Missing column(s): ${partial.missing.map((f) => C.FIELD_LABELS[f]).join(', ')}.` :
-          'No sheet contains a "Ticket ID" header row.';
-        throw new UserError(`Could not find the ticket table in this file. ${why}`);
-      }
-      state.fileName = file.name;
-      fillSheetSelect(usable);
-      const best = usable.reduce((a, b) => (b.rows > a.rows ? b : a));
-      $('#sheetSelect').value = best.name;
-      useSheet(best.name);
+      useWorkbook(sheets, file.name, date1904, { kind: 'file', label: file.name });
+      state.lastFile = { name: file.name, sheets, date1904 };
+      if (state.server) previewImport();
     } catch (err) {
       if (!(err instanceof UserError)) console.error(err);
       setStatus(err && err.message ? err.message : 'The file could not be read.', 'error');
     }
+  }
+
+  /** Use a workbook (uploaded file or team database) as the source of every report. */
+  function useWorkbook(sheets, label, date1904, source) {
+    const detected = C.detectSheets(sheets);
+    const usable = detected.filter((d) => d.ok);
+    if (!usable.length) {
+      const partial = detected.find((d) => d.header);
+      const why = partial ? `Missing column(s): ${partial.missing.map((f) => C.FIELD_LABELS[f]).join(', ')}.` :
+        'No sheet contains a "Ticket ID" header row.';
+      throw new UserError(`Could not find the ticket table in this file. ${why}`);
+    }
+    state.sheets = sheets;
+    state.date1904 = date1904;
+    state.detected = detected;
+    state.fileName = label;
+    state.source = source;
+    state.analysis = null;
+    fillSheetSelect(usable);
+    const best = usable.reduce((a, b) => (b.rows > a.rows ? b : a));
+    $('#sheetSelect').value = best.name;
+    useSheet(best.name);
+    renderSources();
   }
 
   function fillSheetSelect(usable) {
@@ -217,6 +233,7 @@
     const allEx = C.extractTickets(state.sheets.filter((s) => usable.includes(s.name)), { date1904: state.date1904 });
     state.allTickets = allEx.tickets;
     state.byId = new Map(state.allTickets.map((t) => [t.id, t]));
+    applyCls();
     initPeriodSelectors();
     initPeriodFilter();
     initTeamFilter();
@@ -434,12 +451,23 @@
 
   const ngState = {};
 
-  function renderNoGestorPanel(key, containerId, tickets, scopeTxt) {
+  /**
+   * @param movedOut tickets without gestor that a person reviewed and classified so that they left this list
+   *                 (weekly 2.2 lists incidencias only, so a case reviewed as OT moves out) — shown below, with Undo.
+   */
+  function renderNoGestorPanel(key, containerId, tickets, scopeTxt, movedOut = []) {
     const box = document.getElementById(containerId);
-    const st = ngState[key] || (ngState[key] = { reason: '', q: '', limit: 100 });
+    const st = ngState[key] || (ngState[key] = { reason: '', q: '', limit: 100, review: '' });
+    const rerender = () => renderNoGestorPanel(key, containerId, tickets, scopeTxt, movedOut);
+    const movedBox = movedOut.length ? el('div', { class: 'td-sec' },
+      el('h4', { text: `Reviewed manually and now counted as OTs — ${movedOut.length} ticket(s) ${scopeTxt}` }),
+      el('div', { class: 'table-wrap' }, el('table', { class: 'data-table' },
+        el('thead', null, el('tr', null, ['Ticket ID', 'Creation date', 'Current action (as in the Excel)', 'Review'].map((h) => el('th', { text: h, style: 'cursor:default' })))),
+        el('tbody', null, movedOut.map((t) => el('tr', null, el('td', null, tidButton(t.id)), el('td', { text: C.fmtDateTime(t.created) }),
+          el('td', { text: t.action || '(empty)' }), el('td', null, reviewCell(t)))))))) : null;
     if (!tickets.length) {
-      box.replaceChildren(el('h4', { text: 'Sin gestor identificado' }),
-        el('p', { class: 'ok-note', text: `✔ Every case ${scopeTxt} has a gestor in “Current action”.` }));
+      box.replaceChildren(...[el('h4', { text: 'Sin gestor identificado' }),
+        el('p', { class: 'ok-note', text: `✔ Every case ${scopeTxt} has a gestor in “Current action”.` }), movedBox].filter(Boolean));
       return;
     }
     const counts = new Map();
@@ -447,9 +475,21 @@
     if (st.reason && !counts.has(st.reason)) st.reason = '';
     const q = st.q.trim().toLowerCase();
     const list = tickets.filter((t) => (!st.reason || C.noGestorReason(t).code === st.reason) &&
+      (!st.review || (st.review === 'done' ? !!t.classification : !t.classification)) &&
       (!q || `${t.id} ${t.action} ${t.description} ${t.groupName} ${t.gestorDesc}`.toLowerCase().includes(q)));
     const failures = counts.get('unrecognised') || 0;
-    const rerender = () => renderNoGestorPanel(key, containerId, tickets, scopeTxt);
+    const reviewed = tickets.filter((t) => t.classification).length;
+    const reviewChips = el('div', { class: 'chips', role: 'group', 'aria-label': 'Filter by review' },
+      [['', `All`, tickets.length], ['pending', 'Pending review', tickets.length - reviewed], ['done', 'Reviewed', reviewed]].map(([v, label, n]) =>
+        el('button', { type: 'button', class: `chip${st.review === v ? ' active' : ''}`, onclick: () => { st.review = v; st.limit = 100; rerender(); } }, label, el('b', { text: n }))));
+    const pendingShown = list.filter((t) => !t.classification);
+    const bulk = pendingShown.length ? el('span', { class: 'review' },
+      el('span', { class: 'muted small', text: `Classify the ${pendingShown.length} pending case(s) shown as:` }),
+      ...[['INC', 'Incidencia'], ['OT', 'OT']].map(([cat, label]) => el('button', { type: 'button', class: 'btn small', text: label, onclick: async () => {
+        if (pendingShown.length > 500) { toast('Narrow the list (filter or search) to 500 cases or fewer for a bulk classification.', true); return; }
+        if (!window.confirm(`Classify ${pendingShown.length} case(s) as ${label}? Each one is recorded with your name and the date.`)) return;
+        await classify(pendingShown.map((t) => t.id), cat);
+      } }))) : null;
 
     const chips = el('div', { class: 'chips', role: 'group', 'aria-label': 'Filter by reason' },
       el('button', { type: 'button', class: `chip${st.reason ? '' : ' active'}`, onclick: () => { st.reason = ''; st.limit = 100; rerender(); } },
@@ -465,19 +505,20 @@
 
     const shown = list.slice(0, st.limit);
     const table = el('table', { class: 'data-table' },
-      el('thead', null, el('tr', null, ['Ticket ID', 'Creation date', 'Week', 'Type', 'Status', 'Current action (as in the Excel)', 'Reason', 'Gestor mentioned in description', 'Description']
+      el('thead', null, el('tr', null, ['Ticket ID', 'Creation date', 'Week', 'Counted as', 'Review: Incidencia / OT', 'Status', 'Current action (as in the Excel)', 'Reason', 'Gestor mentioned in description', 'Description']
         .map((h) => el('th', { text: h, style: 'cursor:default' })))),
       el('tbody', null, shown.length ? shown.map((t) => el('tr', null,
         el('td', null, tidButton(t.id)),
         el('td', { text: C.fmtDateTime(t.created) }),
         el('td', { text: `${t.weekYear}-S${String(t.week).padStart(2, '0')}` }),
-        el('td', { text: t.category === 'INC' ? 'Incidencia' : `OT (${t.type})` }),
+        el('td', { text: (t.category === 'INC' ? 'Incidencia' : `OT (${t.type})`) + (t.classification ? ' · manual' : '') }),
+        el('td', null, reviewCell(t)),
         el('td', { text: t.status }),
         t.action ? el('td', { text: t.action, title: t.action }) : el('td', null, el('span', { class: 'empty-val', text: '(empty)' })),
         el('td', { class: 'reason', text: C.noGestorReason(t).label }),
         el('td', { text: t.gestorDesc || '—' }),
         el('td', { class: 'desc', text: t.description.replace(/\s+/g, ' '), title: t.description.slice(0, 1500) })))
-        : el('tr', null, el('td', { colspan: 9, class: 'muted', text: 'No tickets match the filter.' }))));
+        : el('tr', null, el('td', { colspan: 10, class: 'muted', text: 'No tickets match the filter.' }))));
 
     box.replaceChildren(...[
       el('div', { class: 'ng-head' },
@@ -488,23 +529,26 @@
               : '✔ None of these is a reading error: the Excel has no gestor in “Current action” for them (see the reason of each ticket).' })),
         el('button', { type: 'button', class: 'btn small', onclick: () => exportNoGestor(list, scopeTxt) }, `Export ${list.length} to Excel`)),
       chips,
-      el('div', { class: 'toolbar' }, search, el('span', { class: 'muted small', text: `${list.length} shown of ${tickets.length}` })),
+      reviewChips,
+      el('div', { class: 'toolbar wrap' }, search, el('span', { class: 'muted small', text: `${list.length} shown of ${tickets.length}` }), bulk),
       el('div', { class: 'table-wrap data-wrap' }, table),
       list.length > shown.length ? el('button', { type: 'button', class: 'btn small more', onclick: () => { st.limit += 200; rerender(); } },
-        `Show more (${list.length - shown.length} remaining)`) : null].filter(Boolean));
+        `Show more (${list.length - shown.length} remaining)`) : null, movedBox].filter(Boolean));
   }
 
   function exportNoGestor(list, scopeTxt) {
     try {
-      const aoa = [['Ticket ID', 'Creation date', 'Week (ISO)', 'Ticket type', 'Status', 'Current action', 'Reason', 'Gestor mentioned in description',
+      const aoa = [['Ticket ID', 'Creation date', 'Week (ISO)', 'Ticket type', 'Counted as', 'Manual review', 'Reviewed by', 'Reviewed at', 'Status', 'Current action', 'Reason', 'Gestor mentioned in description',
         'Initiator - Group ID', 'Initiator - Group abbreviation name', 'Description']];
       for (const t of list) {
-        aoa.push([t.id, C.toExcelSerial(t.created), `${t.weekYear}-S${String(t.week).padStart(2, '0')}`, t.type, t.status, t.action,
+        const c = t.classification;
+        aoa.push([t.id, C.toExcelSerial(t.created), `${t.weekYear}-S${String(t.week).padStart(2, '0')}`, t.type, t.category === 'INC' ? 'Incidencia' : 'OT',
+          c ? (c.category === 'INC' ? 'Incidencia' : 'OT') : '', c ? c.user : '', c ? fmtIso(c.at) : '', t.status, t.action,
           C.noGestorReason(t).label, t.gestorDesc, t.groupId, t.groupName, t.description.slice(0, 32000)]);
       }
       const ws = XLSX.utils.aoa_to_sheet(aoa);
       for (let r = 1; r < aoa.length; r++) { const ref = XLSX.utils.encode_cell({ r, c: 1 }); if (ws[ref]) ws[ref].z = 'yyyy-mm-dd hh:mm'; }
-      ws['!cols'] = [14, 17, 11, 14, 18, 40, 55, 22, 14, 30, 80].map((w) => ({ wch: w }));
+      ws['!cols'] = [14, 17, 11, 14, 12, 14, 20, 16, 18, 40, 55, 22, 14, 30, 80].map((w) => ({ wch: w }));
       ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: aoa[0].length - 1 } }) };
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Sin gestor');
@@ -514,6 +558,378 @@
       console.error(err);
       toast(`Could not create the Excel file: ${err && err.message ? err.message : err}`, true);
     }
+  }
+
+  /* ---------- Team database (server mode) ---------- */
+
+  const api = {
+    async get(path) {
+      const r = await fetch(path, { headers: { Accept: 'application/json' }, cache: 'no-store' });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new UserError(j.error || `Server error (HTTP ${r.status}).`);
+      return j;
+    },
+    async send(method, path, body) {
+      const headers = { 'Content-Type': 'application/json' };
+      let payload = body === undefined ? undefined : JSON.stringify(body);
+      if (payload && payload.length > 1e6 && typeof CompressionStream !== 'undefined') {
+        payload = await new Response(new Blob([payload]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer();
+        headers['Content-Encoding'] = 'gzip';
+      }
+      const r = await fetch(path, { method, headers, body: payload });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new UserError(j.error || `Server error (HTTP ${r.status}).`);
+      return j;
+    },
+  };
+
+  function userName() {
+    return $('#userName').value.trim();
+  }
+
+  function fmtIso(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' });
+  }
+
+  async function detectServer() {
+    if (!/^https?:$/.test(location.protocol)) return null;
+    try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 4000);
+      const r = await fetch('api/health', { signal: ctl.signal, cache: 'no-store' });
+      clearTimeout(timer);
+      if (!r.ok) return null;
+      const j = await r.json();
+      return j && j.ok ? j : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function initDatabase() {
+    try { const v = localStorage.getItem('slm-user'); if (v) $('#userName').value = v; } catch (e) { /* ignore */ }
+    $('#userName').addEventListener('change', () => { try { localStorage.setItem('slm-user', userName()); } catch (e) { /* ignore */ } });
+    $('#dbBox').hidden = false;
+    state.server = await detectServer();
+    if (!state.server) {
+      // File mode (e.g. GitHub Pages): manual classifications stay in this browser
+      $$('#btnUseDb, #btnImports, #btnBackup').forEach((b) => { b.hidden = true; });
+      $('#dbStats').textContent = '— not available here (file mode). Manual classifications are saved in this browser only.';
+      loadLocalClassifications();
+      return;
+    }
+    $('#privacyChip').classList.add('server');
+    $('#privacyText').textContent = 'Team database on this server';
+    $('#privacyChip').title = 'Files you choose to save are stored in the team database on this server, together with the manual classifications.';
+    $('#dzHint').textContent = 'The file is read in your browser; you decide whether to save it to the team database';
+    $('#btnUseDb').addEventListener('click', () => loadDatabase());
+    $('#btnImports').addEventListener('click', toggleImports);
+    $('#btnBackup').addEventListener('click', () => { const a = el('a', { href: 'api/backup', download: '' }); document.body.appendChild(a); a.click(); a.remove(); });
+    renderDbStats();
+    await loadServerClassifications();
+    if (state.server.stats.tickets > 0) await loadDatabase();
+  }
+
+  function renderDbStats() {
+    const st = state.server.stats;
+    $('#dbStats').textContent = `· ${st.tickets.toLocaleString('en')} tickets · ${st.imports} import(s) · ${st.classifications} manual classification(s)`;
+    $('#dbLast').textContent = st.lastImport ? `Last import: ${st.lastImport.file_name} — ${fmtIso(st.lastImport.imported_at)}${st.lastImport.user_name ? ` by ${st.lastImport.user_name}` : ''}` : 'Empty: upload the weekly Excel and save it to start the history.';
+    $('#btnUseDb').disabled = !st.tickets;
+  }
+
+  async function refreshServerStats() {
+    const h = await detectServer();
+    if (h) { state.server = h; renderDbStats(); }
+  }
+
+  async function loadDatabase() {
+    setStatus('Loading the team database…', 'loading');
+    await nextFrame();
+    try {
+      const j = await api.get('api/sheets');
+      const notInLatest = new Map(j.sheets.map((s) => [s.name, new Set(s.notInLatest)]));
+      useWorkbook(j.sheets.map((s) => ({ name: s.name, rows: s.rows })), `Team database — ${j.stats.tickets.toLocaleString('en')} tickets from ${j.stats.imports} import(s)`, false,
+        { kind: 'db', label: 'Team database', notInLatest });
+      $('#dbPreview').hidden = true;
+      setStatus('');
+    } catch (err) {
+      setStatus(err.message || 'Could not load the database.', 'error');
+    }
+  }
+
+  function importPayload(f) {
+    const ok = C.detectSheets(f.sheets).filter((d) => d.ok).map((d) => d.name);
+    return {
+      fileName: f.name,
+      user: userName(),
+      sheets: f.sheets.filter((s) => ok.includes(s.name)).map((s) => {
+        const h = C.findHeader(s.rows);
+        let rows = s.rows.slice(h.index);
+        if (f.date1904) { // store every date on the usual 1900 basis
+          const dateCols = rows[0].map((x, i) => (/date|fecha/i.test(String(x || '')) ? i : -1)).filter((i) => i >= 0);
+          rows = rows.map((r, ri) => (ri === 0 ? r : r.map((v, ci) => (dateCols.includes(ci) && typeof v === 'number' ? v + 1462 : v))));
+        }
+        return { name: s.name, rows };
+      }),
+    };
+  }
+
+  async function previewImport() {
+    const box = $('#dbPreview');
+    box.hidden = false;
+    box.replaceChildren(el('span', { class: 'spinner', 'aria-hidden': 'true' }), ' Comparing this file with the team database…');
+    try {
+      const r = await api.send('POST', 'api/import?dryRun=1', importPayload(state.lastFile));
+      const t = r.totals;
+      const examples = r.sheets.flatMap((s) => s.examples.map((e) => `${e.ticketId} (${s.sheet}): ${e.changes.slice(0, 3).map((c) => `${c.field} “${c.old || '—'}” → “${c.new || '—'}”`).join('; ')}`)).slice(0, 6);
+      box.replaceChildren(
+        el('div', null, el('strong', { text: `“${r.fileName}” compared with the team database: ` }),
+          `${t.added.toLocaleString('en')} new · ${t.updated.toLocaleString('en')} updated · ${t.unchanged.toLocaleString('en')} unchanged · ${t.notInFile.toLocaleString('en')} in the database but not in this file (kept).`),
+        el('div', { class: 'muted small', text: r.sheets.map((s) => `${s.sheet}: +${s.added} / ~${s.updated} / =${s.unchanged} / kept ${s.notInFile}`).join('  ·  ') }),
+        examples.length ? el('ul', null, examples.map((x) => el('li', { class: 'small', text: x }))) : null,
+        el('div', { class: 'row' },
+          el('button', { type: 'button', class: 'btn primary small', onclick: commitImport, disabled: !(t.added || t.updated) },
+            t.added || t.updated ? 'Update the database with this file' : 'Nothing new to save'),
+          el('button', { type: 'button', class: 'btn small', onclick: () => { box.hidden = true; } }, 'Keep using this file only'),
+          el('span', { class: 'muted small', text: 'Now showing: this file only.' })));
+    } catch (err) {
+      box.replaceChildren(el('span', { class: 'status error', text: `Could not compare with the database: ${err.message}` }));
+    }
+  }
+
+  async function commitImport() {
+    if (!userName()) { toast('Enter your name first (it is recorded with the import).', true); $('#userName').focus(); return; }
+    const box = $('#dbPreview');
+    box.replaceChildren(el('span', { class: 'spinner', 'aria-hidden': 'true' }), ' Saving to the team database…');
+    try {
+      const r = await api.send('POST', 'api/import', importPayload(state.lastFile));
+      toast(`Database updated: ${r.totals.added} new, ${r.totals.updated} updated, ${r.totals.unchanged} unchanged.`);
+      await refreshServerStats();
+      await loadDatabase();
+    } catch (err) {
+      box.replaceChildren(el('span', { class: 'status error', text: `The database was NOT updated: ${err.message}` }));
+    }
+  }
+
+  async function toggleImports() {
+    const box = $('#dbImports');
+    if (!box.hidden) { box.hidden = true; return; }
+    try {
+      const { imports } = await api.get('api/imports');
+      box.replaceChildren(el('table', { class: 'rep compact' },
+        el('thead', null, el('tr', { class: 'weeks' }, ['#', 'File', 'Imported', 'By', 'Rows read', 'New', 'Updated', 'Unchanged', 'Not in file (kept)'].map((h) => el('th', { text: h })))),
+        el('tbody', null, imports.map((i) => el('tr', null, [i.id, i.file_name, fmtIso(i.imported_at), i.user_name || '—', i.rows_read, i.added, i.updated, i.unchanged, i.not_in_file]
+          .map((v, k) => el('td', { text: v, style: k === 1 ? 'text-align:left' : null })))))));
+      box.hidden = false;
+    } catch (err) { toast(err.message, true); }
+  }
+
+  /* ---------- Manual classification (review of "Sin gestor identificado") ---------- */
+
+  function loadLocalClassifications() {
+    state.cls = new Map();
+    try {
+      const raw = JSON.parse(localStorage.getItem('slm-classifications') || '{}');
+      for (const [id, c] of Object.entries(raw)) if (c && (c.category === 'INC' || c.category === 'OT')) state.cls.set(id, c);
+    } catch (e) { /* ignore */ }
+  }
+
+  async function loadServerClassifications() {
+    try {
+      const { classifications } = await api.get('api/classifications');
+      state.cls = new Map(classifications.map((c) => [c.ticket_id, { category: c.category, user: c.user_name, at: c.at, note: c.note }]));
+    } catch (err) { toast(`Could not load the classifications: ${err.message}`, true); }
+  }
+
+  function applyCls() {
+    if (state.tickets) C.applyClassifications(state.tickets, state.cls);
+    if (state.allTickets) C.applyClassifications(state.allTickets, state.cls);
+  }
+
+  async function classify(ids, category) {
+    if (!userName()) { toast('Enter your name (step 1, “Your name”) before classifying.', true); $('#userName').focus(); return false; }
+    const list = Array.isArray(ids) ? ids : [ids];
+    try {
+      for (const id of list) {
+        if (state.server) {
+          if (category) {
+            const c = await api.send('PUT', `api/classifications/${encodeURIComponent(id)}`, { category, user: userName() });
+            state.cls.set(id, { category: c.category, user: c.user_name, at: c.at });
+          } else {
+            await api.send('DELETE', `api/classifications/${encodeURIComponent(id)}?user=${encodeURIComponent(userName())}`);
+            state.cls.delete(id);
+          }
+        } else {
+          if (category) state.cls.set(id, { category, user: userName(), at: new Date().toISOString() });
+          else state.cls.delete(id);
+        }
+      }
+      if (!state.server) {
+        try { localStorage.setItem('slm-classifications', JSON.stringify(Object.fromEntries(state.cls))); } catch (e) { /* ignore */ }
+      }
+    } catch (err) {
+      toast(`Classification not saved: ${err.message}`, true);
+    }
+    applyCls();
+    recompute();
+    if (state.server) refreshServerStats();
+    return true;
+  }
+
+  function reviewCell(t, after) {
+    const c = t.classification;
+    const done = (cat) => async () => { await classify(t.id, cat); if (after) after(); };
+    if (c) {
+      return el('span', { class: 'review' },
+        el('span', { class: 'done', text: `✔ ${c.category === 'INC' ? 'Incidencia' : 'OT'}` }),
+        el('span', { class: 'by', text: `${c.user}${c.at ? ' · ' + fmtIso(c.at) : ''}` }),
+        el('button', { type: 'button', class: 'btn small', text: 'Undo', title: `Back to the automatic rule (${t.categoryAuto === 'INC' ? 'Incidencia' : 'OT'})`, onclick: done(null) }));
+    }
+    return el('span', { class: 'review' },
+      el('button', { type: 'button', class: 'btn small', text: 'Incidencia', title: 'Count this case as an incidencia', onclick: done('INC') }),
+      el('button', { type: 'button', class: 'btn small', text: 'OT', title: 'Count this case as an OT', onclick: done('OT') }));
+  }
+
+  /* ---------- Source sheets tab ---------- */
+
+  const srcState = { sheet: '', q: '', page: 0 };
+
+  function renderSources() {
+    if (!state.sheets.length) return;
+    const a = state.analysis || (state.analysis = C.analyzeSheets(state.sheets, { date1904: state.date1904 }));
+    const nl = state.source.kind === 'db' ? state.source.notInLatest : null;
+    $('#srcLabel').textContent = `(${state.source.kind === 'db' ? 'team database' : 'uploaded file'}: ${state.fileName})`;
+    const fmtList = (pairs, n = 4) => pairs.slice(0, n).map(([k, v]) => `${k}: ${v.toLocaleString('en')}`).join(' · ') + (pairs.length > n ? ` · +${pairs.length - n} more` : '');
+    const head = ['Sheet', 'Ticket table', 'Rows', 'Unique tickets', 'Repeated rows', 'Created from – to', 'Incidencias', 'OTs (by technician action)', 'Ticket types', 'Statuses', 'Only in this sheet', 'Missing columns'];
+    if (nl) head.push('Not in the last imported file');
+    $('#srcSummary').replaceChildren(el('table', { class: 'rep compact' },
+      el('thead', null, el('tr', { class: 'weeks' }, head.map((h) => el('th', { text: h })))),
+      el('tbody', null, a.sheets.map((s) => el('tr', null, s.isTicketSheet ? [
+        el('td', { text: s.name, style: 'font-weight:600' }),
+        el('td', { text: s.ok ? `✔ header on row ${s.headerRow}` : '⚠ incomplete' }),
+        el('td', { text: s.rows.toLocaleString('en') }),
+        el('td', { text: s.uniqueTickets.toLocaleString('en') }),
+        el('td', { class: s.duplicatedRows ? null : 'zero', text: s.duplicatedRows }),
+        el('td', { text: s.minCreated !== null ? `${C.fmtDate(s.minCreated)} – ${C.fmtDate(s.maxCreated)}` : '—' }),
+        el('td', { text: s.incidencias.toLocaleString('en') }),
+        el('td', { text: `${s.ots.toLocaleString('en')} (${s.otsByAction.toLocaleString('en')})` }),
+        el('td', { class: 'wrap', text: fmtList(s.types) }),
+        el('td', { class: 'wrap', text: fmtList(s.statuses) }),
+        el('td', { text: s.onlyInThisSheet.toLocaleString('en') }),
+        el('td', { class: 'wrap', text: s.missingColumns.length ? s.missingColumns.join(', ') : '—' }),
+        nl ? el('td', { text: (nl.get(s.name) ? nl.get(s.name).size : 0).toLocaleString('en') }) : null,
+      ] : [
+        el('td', { text: s.name, style: 'font-weight:600' }),
+        el('td', { class: 'wrap', colspan: head.length - 1, text: `Summary / other sheet (no Ticket ID table, ${s.nonEmptyRows} non-empty rows) — not used for the calculations.` }),
+      ])))));
+
+    // consistency notes
+    const notes = [];
+    const ts = a.sheets.filter((s) => s.isTicketSheet);
+    const idx = (n) => a.overlap.names.indexOf(n);
+    for (const s of ts) {
+      if (/fail/i.test(s.name)) {
+        const other = s.types.filter(([k]) => k !== 'Failure');
+        notes.push(other.length ? ['warn', `“${s.name}”: ${other.map(([k, v]) => `${v} ${k}`).join(', ')} besides Failure.`] : ['ok', `“${s.name}”: every ticket is of type Failure.`]);
+      }
+      if (/work\s*order/i.test(s.name)) {
+        const other = s.types.filter(([k]) => k !== 'Work order');
+        notes.push(other.length ? ['warn', `“${s.name}”: ${other.map(([k, v]) => `${v} ${k}`).join(', ')} besides Work order.`] : ['ok', `“${s.name}”: every ticket is of type Work order.`]);
+      }
+      for (const o of ts) {
+        if (o === s) continue;
+        const shared = a.overlap.matrix[idx(s.name)][idx(o.name)];
+        if (shared === s.uniqueTickets && s.uniqueTickets) notes.push(['ok', `All ${s.uniqueTickets.toLocaleString('en')} tickets of “${s.name}” are also in “${o.name}”.`]);
+      }
+      if (s.repeatedTickets) notes.push(['warn', `“${s.name}”: ${s.repeatedTickets} ticket(s) appear on more than one row (${s.duplicatedRows} extra rows); the first row is used, the other values are kept in the ticket detail.`]);
+      if (s.invalidDates) notes.push(['warn', `“${s.name}”: ${s.invalidDates} row(s) without a valid Creation date are ignored.`]);
+      if (s.otsByAction) notes.push(['ok', `“${s.name}”: ${s.otsByAction.toLocaleString('en')} Failure ticket(s) counted as OTs because Current action is a technician / work status.`]);
+      if (nl && nl.get(s.name) && nl.get(s.name).size) notes.push(['ok', `“${s.name}”: ${nl.get(s.name).size.toLocaleString('en')} ticket(s) are not in the last imported file — kept from earlier imports.`]);
+    }
+    notes.push(['ok', `${a.uniqueTicketsAllSheets.toLocaleString('en')} different tickets across all ticket sheets.`]);
+    $('#srcNotes').replaceChildren(...notes.map(([k, t]) => el('li', { class: k, text: `${k === 'ok' ? '✔' : '⚠'} ${t}` })));
+
+    const n = a.overlap.names;
+    $('#srcOverlap').replaceChildren(n.length > 1 ? el('table', { class: 'rep compact' },
+      el('thead', null, el('tr', { class: 'weeks' }, el('th', { text: 'Tickets of … also in →' }), n.map((x) => el('th', { text: x })))),
+      el('tbody', null, n.map((r, i) => el('tr', null, el('td', { text: r }), n.map((c, j) => el('td', { class: i === j ? 'zero' : null, text: a.overlap.matrix[i][j].toLocaleString('en') }))))))
+      : el('p', { class: 'muted', text: 'Only one ticket sheet.' }));
+
+    const sel = $('#srcSheet');
+    sel.replaceChildren(...state.sheets.map((s) => el('option', { value: s.name, text: s.name })));
+    if (!state.sheets.some((s) => s.name === srcState.sheet)) srcState.sheet = (ts[0] || a.sheets[0]).name;
+    sel.value = srcState.sheet;
+    srcState.page = 0;
+    renderSourceRows();
+  }
+
+  function sourceGrid() {
+    const sh = state.sheets.find((s) => s.name === srcState.sheet);
+    if (!sh) return { head: [], rows: [], idCol: -1 };
+    const h = C.findHeader(sh.rows);
+    if (h) {
+      const head = (sh.rows[h.index] || []).map((x) => (x === null || x === undefined ? '' : String(x)));
+      const rows = sh.rows.slice(h.index + 1).filter((r) => Array.isArray(r) && r.some((v) => v !== null && v !== ''));
+      return { head, rows, idCol: h.map.ticketId, dateCols: head.map((x) => /date|fecha/i.test(x)) };
+    }
+    const width = sh.rows.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0);
+    const head = Array.from({ length: width }, (_, i) => XLSX.utils.encode_col(i));
+    return { head, rows: sh.rows.filter((r) => Array.isArray(r) && r.some((v) => v !== null && v !== '')), idCol: -1, dateCols: [] };
+  }
+
+  function cellText(v, isDate) {
+    if (v === null || v === undefined) return '';
+    if (isDate && typeof v === 'number') { const ms = C.parseDate(v, state.date1904); return ms === null ? String(v) : C.fmtDateTime(ms); }
+    return String(v);
+  }
+
+  function renderSourceRows() {
+    const g = sourceGrid();
+    const q = srcState.q.trim().toLowerCase();
+    const list = q ? g.rows.filter((r) => r.some((v, i) => cellText(v, g.dateCols[i]).toLowerCase().includes(q))) : g.rows;
+    const SIZE = 50;
+    const pages = Math.max(1, Math.ceil(list.length / SIZE));
+    if (srcState.page >= pages) srcState.page = pages - 1;
+    const rows = list.slice(srcState.page * SIZE, srcState.page * SIZE + SIZE);
+    $('#srcRows').replaceChildren(el('table', { class: 'data-table' },
+      el('thead', null, el('tr', null, el('th', { text: '#', style: 'cursor:default' }), g.head.map((h) => el('th', { text: h, style: 'cursor:default' })))),
+      el('tbody', null, rows.length ? rows.map((r, k) => el('tr', null,
+        el('td', { class: 'muted', text: srcState.page * SIZE + k + 1 }),
+        g.head.map((_, i) => {
+          if (i === g.idCol && r[i]) return el('td', null, tidButton(String(r[i]).trim()));
+          const t = cellText(r[i], g.dateCols[i]);
+          return el('td', { text: t, title: t.length > 40 ? t.slice(0, 1500) : null });
+        })))
+        : el('tr', null, el('td', { colspan: g.head.length + 1, class: 'muted', text: 'No rows match.' })))));
+    $('#srcCount').textContent = `${list.length.toLocaleString('en')} of ${g.rows.length.toLocaleString('en')} rows`;
+    $('#srcPg').textContent = list.length ? `page ${srcState.page + 1} of ${pages}` : '';
+    $('#srcPrev').disabled = srcState.page === 0;
+    $('#srcNext').disabled = srcState.page >= pages - 1;
+  }
+
+  function initSources() {
+    $('#srcSheet').addEventListener('change', () => { srcState.sheet = $('#srcSheet').value; srcState.page = 0; renderSourceRows(); });
+    let timer;
+    $('#srcSearch').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { srcState.q = $('#srcSearch').value; srcState.page = 0; renderSourceRows(); }, 250); });
+    $('#srcPrev').addEventListener('click', () => { if (srcState.page > 0) { srcState.page--; renderSourceRows(); } });
+    $('#srcNext').addEventListener('click', () => { srcState.page++; renderSourceRows(); });
+    $('#srcExport').addEventListener('click', () => {
+      try {
+        const g = sourceGrid();
+        const aoa = [g.head, ...g.rows.map((r) => g.head.map((_, i) => {
+          const v = r[i];
+          if (g.dateCols[i] && typeof v === 'number') { const ms = C.parseDate(v, state.date1904); return ms === null ? v : C.toExcelSerial(ms); }
+          return v === undefined ? null : v;
+        }))];
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        g.dateCols.forEach((isDate, c) => { if (!isDate) return; for (let r = 1; r < aoa.length; r++) { const ref = XLSX.utils.encode_cell({ r, c }); if (ws[ref] && ws[ref].t === 'n') ws[ref].z = 'yyyy-mm-dd hh:mm'; } });
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, srcState.sheet.slice(0, 31).replace(/[\\/?*[\]:]/g, '_') || 'Sheet');
+        XLSX.writeFile(wb, `${safeFilePart(srcState.sheet) || 'sheet'}.xlsx`, { compression: true });
+      } catch (err) { toast(`Could not export the sheet: ${err.message}`, true); }
+    });
   }
 
   /* ---------- Ticket detail window ---------- */
@@ -564,8 +980,10 @@
     ]));
     const ng = t.gestor ? null : C.noGestorReason(t).label;
     const derived = grid([
-      ['Incidencia / OT', t.category === 'INC' ? 'Incidencia (Failure)'
-        : (t.categoryByAction ? `OT — ticket type ${t.type}, counted as OT because “Current action” is a technician / work status` : `OT (${t.type})`)],
+      ['Incidencia / OT', t.classification
+        ? `${t.category === 'INC' ? 'Incidencia' : 'OT'} — classified manually by ${t.classification.user}${t.classification.at ? ' on ' + fmtIso(t.classification.at) : ''} (rules: ${t.categoryAuto === 'INC' ? 'Incidencia' : 'OT'})`
+        : (t.category === 'INC' ? 'Incidencia (Failure)'
+          : (t.categoryByAction ? `OT — ticket type ${t.type}, counted as OT because “Current action” is a technician / work status` : `OT (${t.type})`))],
       ['Week (ISO) of creation', `${t.weekYear}-S${String(t.week).padStart(2, '0')}`],
       ['Gestor (from Current action)', t.gestor || `— ${ng}`],
       ['Problema', t.problema],
@@ -576,11 +994,28 @@
       ['Found in sheet(s)', t.sheets.join(' / ')],
     ]);
     const raw = grid(t.raw.filter(([k]) => k !== 'Description').map(([k, v]) => [k, v, t.rawAlt[k]]));
-    $('#tdBody').replaceChildren(
+    const reviewBox = el('div', { class: 'td-sec' }, el('h4', { text: 'Manual review (Incidencia / OT)' }),
+      el('div', { class: 'td-review' }, reviewCell(t, () => openTicket(t.id)),
+        el('span', { class: 'muted small', text: t.classification ? '' : `Now counted as ${t.category === 'INC' ? 'Incidencia' : 'OT'} by the rules.` })));
+    const histBox = state.server ? el('div', { class: 'td-sec' }, el('h4', { text: 'History in the team database' }), el('div', { class: 'muted small', text: 'Loading…' })) : null;
+    $('#tdBody').replaceChildren(...[
       flow,
+      reviewBox,
+      histBox,
       el('div', { class: 'td-sec' }, el('h4', { text: 'Interpreted by the tool' }), derived),
       el('div', { class: 'td-sec' }, el('h4', { text: 'Description' }), el('div', { class: 'td-desc', text: t.description || '(empty)' })),
-      el('div', { class: 'td-sec' }, el('h4', { text: `All columns as in the Excel (${t.raw.length})` }), raw));
+      el('div', { class: 'td-sec' }, el('h4', { text: `All columns as in the Excel (${t.raw.length})` }), raw)].filter(Boolean));
+    if (histBox) {
+      api.get(`api/tickets/${encodeURIComponent(t.id)}/history`).then((h) => {
+        const items = [
+          ...h.rows.map((r) => `${r.sheet}: first imported from “${r.first_file}” (${fmtIso(r.first_at)}); last seen in “${r.last_seen_file}” (${fmtIso(r.last_seen_at)})`),
+          ...h.changes.map((c) => `${fmtIso(c.imported_at)} · ${c.file_name}${c.user_name ? ' (' + c.user_name + ')' : ''} · ${c.sheet}: ${c.field} “${c.old_value || '—'}” → “${c.new_value || '—'}”`),
+          ...h.classifications.map((c) => `${fmtIso(c.at)} · ${c.user_name}: ${c.action === 'remove' ? 'manual review removed' : 'classified as ' + (c.category === 'INC' ? 'Incidencia' : 'OT')}`),
+        ];
+        histBox.replaceChildren(el('h4', { text: 'History in the team database' }),
+          items.length ? el('ul', { class: 'td-hist' }, items.map((x) => el('li', { text: x }))) : el('div', { class: 'muted small', text: 'Not in the database yet (this file has not been saved).' }));
+      }).catch(() => histBox.replaceChildren(el('h4', { text: 'History in the team database' }), el('div', { class: 'muted small', text: 'Could not load the history.' })));
+    }
     const dlg = $('#ticketDialog');
     if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); } else dlg.setAttribute('open', '');
     $('#tdBody').scrollTop = 0;
@@ -967,8 +1402,10 @@
     if (r.gestorUnidentified) notes.push(`Across the ${r.weeks.length} week(s) shown, ${r.gestorUnidentified} incidencia(s) have no gestor in “Current action” (empty, DEVUELTO or “Cerrado”; technician statuses such as “JR - Trabajando” are counted as OTs) and are shown as “Sin gestor identificado”.`);
     if (r.gestorInferred) notes.push(`${r.gestorInferred} gestor(s) were taken from the ticket description (option enabled); this is stated in the Word report.`);
     $('#gestorNote').textContent = notes.join(' ');
+    const movedOut = state.tickets.filter((t) => t.classification && t.category === 'OT' && t.categoryAuto === 'INC' && !t.gestor &&
+      t.created >= r.weeks[0].start && t.created < r.cutoff);
     renderNoGestorPanel('weekly', 'noGestorPanel', r.noGestorTickets,
-      `in semanas ${r.weeks[0].week}–${r.reportWeek.week} (incidencias)`);
+      `in semanas ${r.weeks[0].week}–${r.reportWeek.week} (incidencias)`, movedOut);
   }
 
   function renderPending() {
@@ -1145,6 +1582,8 @@
     { key: 'description', label: 'Description' },
     { key: 'sheets', label: 'Found in sheet(s)', fmt: listFmt },
     { key: 'categoryByAction', label: 'Counted as OT by Current action', fmt: (v) => (v ? 'Sí' : '') },
+    { key: 'categoryAuto', label: 'Classification by the rules', fmt: (v) => (v === 'INC' ? 'Incidencia' : 'OT') },
+    { key: 'classification', label: 'Manual review', fmt: (c) => (c ? `${c.category === 'INC' ? 'Incidencia' : 'OT'} — ${c.user}${c.at ? ', ' + fmtIso(c.at) : ''}` : '') },
   ];
   const ALL_COLUMNS = [...DATA_COLUMNS, ...DETAIL_COLUMNS];
   const DEFAULT_VISIBLE = DATA_COLUMNS.map((c) => c.key).concat(['restorationGroupId', 'restorationUser', 'closureUser']);
@@ -1428,6 +1867,7 @@
       if (includePeriod) meta.period = { data: state.period, note: periodNote(state.period), gestorCaption: gestorCaption(state.period) };
       if (includeTeam) meta.team = { data: state.team, note: teamNote(state.team) };
       meta.include = sections;
+      meta.manualReviewed = state.tickets.filter((t) => t.classification && t.created >= r.weeks[0].start && t.created < r.cutoff).length;
       const doc = SLMDocx.buildDocument(window.docx, C, r, meta, { logo, charts, periodCharts, periodTables, teamCharts, teamTables });
       const blob = await docx.Packer.toBlob(doc);
       const name = `INFORME-SLM-OSS-Sortis-${r.reportWeek.year}-Semana${String(r.reportWeek.week).padStart(2, '0')}-${safeFilePart(r.periodLabel.replace(/ \/ /g, '-'))}.docx`;
@@ -1574,6 +2014,8 @@
       ['Gestor / Problema / Técnico', 'Current action split as GESTOR - PROBLEMA - TÉCNICO; spelling variants merged'],
       ['Week', 'ISO week (Monday–Sunday) calculated from the Creation date'],
       ['Duplicated Ticket ID rows', 'First row used for the figures; values of other rows kept in “Original rows (all sheets)”'],
+      ['Manual review', 'A case classified by a person as Incidencia or OT (“Sin gestor identificado” review) is counted that way everywhere; see the “Manual review” column'],
+      ['Source', state.source.kind === 'db' ? 'Team database on the server (every imported weekly file merged)' : 'Uploaded file only'],
       [],
       ['Warnings while reading the file', ''],
       ...Array.from($('#warnings').querySelectorAll('li')).map((li) => ['', li.textContent]),
@@ -1638,9 +2080,11 @@
     initPendingFilter();
     initDataTable();
     initPeriodControls();
+    initSources();
     initTeamControls();
     initTicketDialog();
     initSectionPicker();
+    initDatabase();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

@@ -366,3 +366,37 @@ test('Technician / work status in Current action → counted as OT whatever the 
   assert.ok(r.checks.every((c) => c.ok), JSON.stringify(r.checks.filter((c) => !c.ok)));
   assert.deepEqual([r.inc[0].nuevos, r.ot[0].nuevos], [3, 4]);
 });
+
+test('Manual review overrides the rule everywhere and can be undone', () => {
+  const ex = C.extractTickets([sheet([
+    ticket('R1', [2026, 8, 21], { action: '' }), // incidencia without gestor
+    ticket('R2', [2026, 8, 22], { action: 'DEVUELTO', status: 'Closed' }),
+    ticket('R3', [2026, 8, 22], { type: 'Work order', action: '' }),
+  ])]);
+  const w = [C.weekFromKey(202639)];
+  const before = C.computeReport(ex.tickets, { weeks: w, slmGroups: [] });
+  assert.deepEqual([before.inc[0].nuevos, before.ot[0].nuevos], [2, 1]);
+  const n = C.applyClassifications(ex.tickets, new Map([['R1', { category: 'OT', user: 'Ana', at: '2026-10-08T10:00:00Z' }], ['R3', { category: 'INC', user: 'Ana' }]]));
+  assert.equal(n, 2);
+  const after = C.computeReport(ex.tickets, { weeks: w, slmGroups: [] });
+  assert.ok(after.checks.every((c) => c.ok), JSON.stringify(after.checks.filter((c) => !c.ok)));
+  assert.deepEqual([after.inc[0].nuevos, after.ot[0].nuevos], [2, 1]); // R1 → OT, R3 → INC
+  assert.deepEqual(after.noGestorTickets.map((t) => t.id).sort(), ['R2', 'R3']);
+  const r1 = ex.tickets.find((t) => t.id === 'R1');
+  assert.deepEqual([r1.category, r1.categoryAuto, r1.classification.user], ['OT', 'INC', 'Ana']);
+  C.applyClassifications(ex.tickets, new Map()); // undo all
+  assert.deepEqual(ex.tickets.map((t) => t.category).sort(), ['INC', 'INC', 'OT']);
+  assert.ok(ex.tickets.every((t) => t.classification === null));
+});
+
+test('Source sheets analysis', () => {
+  const a = sheet([ticket('S1', [2026, 8, 21]), ticket('S2', [2026, 8, 21], { type: 'Work order' }), ticket('S2', [2026, 8, 21], { type: 'Work order' })]);
+  const f = { name: 'Ticket Failure', rows: [HEADER, ...[ticket('S1', [2026, 8, 21])].map((r) => HEADER.map((h) => r[h] ?? null))] };
+  const res = C.analyzeSheets([{ name: 'Resumen', rows: [['Resumen'], [1, 2]] }, a, f]);
+  const [sum, asig, fail] = res.sheets;
+  assert.equal(sum.isTicketSheet, false);
+  assert.deepEqual([asig.rows, asig.uniqueTickets, asig.duplicatedRows, asig.incidencias, asig.ots, asig.onlyInThisSheet], [3, 2, 1, 1, 1, 1]);
+  assert.deepEqual([fail.uniqueTickets, fail.onlyInThisSheet], [1, 0]);
+  assert.deepEqual(res.overlap.matrix, [[2, 1], [1, 1]]);
+  assert.equal(res.uniqueTicketsAllSheets, 2);
+});

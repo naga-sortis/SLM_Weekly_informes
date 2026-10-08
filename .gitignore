@@ -6,3 +6,8 @@
 *.docx
 node_modules/
 .DS_Store
+
+# Server database (never commit ticket data)
+data/
+*.sqlite
+*.sqlite-*

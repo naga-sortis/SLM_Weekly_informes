@@ -443,3 +443,24 @@ table.rep tr.unidentified td:first-child { cursor: pointer; text-decoration: und
 .export-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; }
 
 table.rep tr.techot td { font-style: italic; color: var(--muted); }
+
+/* Team database box */
+.dbbox { margin-top: 14px; border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border)); border-radius: 10px; padding: 12px 14px; background: var(--accent-soft); }
+.db-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.db-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.db-actions input { width: 180px; min-height: 30px; padding: 4px 8px; }
+.db-preview { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); font-size: 13px; }
+.db-preview .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+.db-preview ul { margin: 6px 0 0; padding-left: 18px; }
+.privacy.server { color: var(--accent); background: var(--accent-soft); }
+.src-notes { margin: 6px 0 14px; padding-left: 18px; font-size: 13px; }
+.src-notes li.ok { color: var(--ok); }
+.src-notes li.warn { color: var(--warn-text); }
+table.rep td.wrap { white-space: normal; text-align: left; min-width: 160px; font-size: 12px; }
+/* Manual review */
+.review { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.review .btn.small { padding: 2px 8px; font-size: 11.5px; }
+.review .done { font-size: 11.5px; font-weight: 600; color: var(--ok); }
+.review .by { font-size: 11px; color: var(--muted); }
+.td-review { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.td-hist { font-size: 12px; margin: 6px 0 0; padding-left: 18px; color: var(--muted); }

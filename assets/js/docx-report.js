@@ -295,6 +295,7 @@
         const notes = [`Incidencias nuevas de cada semana agrupadas por el gestor indicado en la acción actual (GESTOR - PROBLEMA - TÉCNICO); el total de cada semana coincide con “Nuevos durante la semana” ${ref}.`];
         if (report.gestorUnidentified) notes.push(`“Sin gestor identificado”: incidencias cuya acción actual no indica gestor (sin acción, devueltas o cerradas). Los casos con un técnico trabajando en la acción actual (p. ej. “JR - Trabajando”) se cuentan como OTs.`);
         if (report.gestorInferred) notes.push(`${report.gestorInferred} incidencia(s) sin gestor en la acción actual se han asignado según el gestor citado en su descripción.`);
+        if (meta.manualReviewed) notes.push(`${meta.manualReviewed} caso(s) de estas semanas se han revisado manualmente y se cuentan como incidencia u OT según esa revisión.`);
         children.push(text(notes.join(' '), { italics: true, size: 17, color: '606060' }, { spacing: { before: 80 } }));
       } else {
         children.push(text('No hay incidencias nuevas en las semanas del informe.', { italics: true }));
@@ -319,7 +320,9 @@
           ['TicketID', t.id],
           ['Fecha de creación', C.fmtDateTime(t.created)],
           ['Estado', t.open ? t.status : `Current (estado actual: ${t.status})`],
-          ['Tipo', t.type + (t.categoryByAction ? ' (contado como OT: técnico trabajando en la acción actual)' : '')],
+          ['Tipo', t.type + (t.classification
+            ? ` (clasificado manualmente como ${t.classification.category === 'INC' ? 'incidencia' : 'OT'} por ${t.classification.user}${t.classification.at ? ' el ' + C.fmtDate(Date.parse(t.classification.at)) : ''})`
+            : (t.categoryByAction ? ' (contado como OT: técnico trabajando en la acción actual)' : ''))],
           ['Prioridad', t.priority],
           ['Persona que lo inicia', t.userName],
           ['Grupo que lo inicia', t.groupId + (t.groupName ? ` (${t.groupName})` : '')],

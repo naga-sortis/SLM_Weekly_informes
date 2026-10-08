@@ -20,9 +20,9 @@
       </div>
     </div>
     <div class="topbar-actions">
-      <span class="privacy" title="The Excel file is read by your browser. No data is sent to any server.">
+      <span class="privacy" id="privacyChip" title="The Excel file is read by your browser. No data is sent to any server.">
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Zm-1 14-4-4 1.4-1.4L11 13.2l4.6-4.6L17 10l-6 6Z"/></svg>
-        Processed locally — nothing is uploaded
+        <span id="privacyText">Processed locally — nothing is uploaded</span>
       </span>
       <button id="themeToggle" class="icon-btn" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.5 0-1-.1-1.4A5.5 5.5 0 0 1 13.4 3.1 9 9 0 0 0 12 3Z"/></svg>
@@ -44,8 +44,25 @@
         <input id="fileInput" type="file" accept=".xlsx,.xlsm,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" hidden>
         <svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true"><path fill="currentColor" d="M19 15v4H5v-4H3v4a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4h-2ZM11 5.8V16h2V5.8l3.6 3.6L18 8l-6-6-6 6 1.4 1.4L11 5.8Z"/></svg>
         <span class="dz-title">Drop the Excel file here or <u>browse</u></span>
-        <span class="dz-hint">Your file never leaves this computer</span>
+        <span class="dz-hint" id="dzHint">Your file never leaves this computer</span>
       </label>
+      <div id="dbBox" class="dbbox" hidden>
+        <div class="db-head">
+          <div>
+            <strong>Team database</strong> <span class="muted small" id="dbStats"></span>
+            <div class="muted small" id="dbLast"></div>
+          </div>
+          <div class="db-actions">
+            <label class="inline-label" for="userName">Your name</label>
+            <input id="userName" type="text" placeholder="Name Surname" autocomplete="name" maxlength="80">
+            <button id="btnUseDb" type="button" class="btn small">Use database for the reports</button>
+            <button id="btnImports" type="button" class="btn small">Import history</button>
+            <button id="btnBackup" type="button" class="btn small" title="Download a copy of the whole database">Backup</button>
+          </div>
+        </div>
+        <div id="dbPreview" class="db-preview" hidden></div>
+        <div id="dbImports" class="table-wrap" hidden></div>
+      </div>
       <div id="loadStatus" class="status" hidden></div>
       <div id="fileInfo" class="file-info" hidden>
         <div class="file-meta">
@@ -184,6 +201,7 @@
       <div class="kpis" id="kpis"></div>
 
       <nav class="tabs" role="tablist" aria-label="Report sections">
+        <button role="tab" class="tab" data-tab="sources" aria-selected="false">Source sheets</button>
         <button role="tab" class="tab active" data-tab="weekly" aria-selected="true">Weekly detail</button>
         <button role="tab" class="tab" data-tab="gestor" aria-selected="false">Cases by gestor</button>
         <button role="tab" class="tab" data-tab="pending" aria-selected="false">Unresolved cases</button>
@@ -192,6 +210,28 @@
         <button role="tab" class="tab" data-tab="team" aria-selected="false">Sortis team</button>
         <button role="tab" class="tab" data-tab="data" aria-selected="false">Extracted data</button>
       </nav>
+
+      <div class="tab-panel card" data-panel="sources" hidden>
+        <h3>Source sheets <span class="muted small" id="srcLabel"></span></h3>
+        <p class="muted small">What each sheet of the source contains, before any report rule is applied — check it first. Ticket sheets are those with a <code>Ticket ID</code> header row.</p>
+        <div class="table-wrap" id="srcSummary"></div>
+        <ul class="src-notes" id="srcNotes"></ul>
+        <h3>Tickets shared between sheets</h3>
+        <div class="table-wrap" id="srcOverlap"></div>
+        <h3>Sheet contents <span class="muted small">(rows exactly as in the source)</span></h3>
+        <div class="toolbar wrap">
+          <select id="srcSheet" aria-label="Sheet"></select>
+          <input id="srcSearch" type="search" placeholder="Search in this sheet…" aria-label="Search in sheet">
+          <button id="srcExport" type="button" class="btn small">Export this sheet</button>
+          <span class="muted small" id="srcCount"></span>
+        </div>
+        <div class="table-wrap data-wrap" id="srcRows"></div>
+        <div class="pager">
+          <button id="srcPrev" class="btn small" type="button">‹ Prev</button>
+          <span id="srcPg" class="muted small"></span>
+          <button id="srcNext" class="btn small" type="button">Next ›</button>
+        </div>
+      </div>
 
       <div class="tab-panel card" data-panel="weekly">
         <h3>2.1 Casos tratados</h3>
