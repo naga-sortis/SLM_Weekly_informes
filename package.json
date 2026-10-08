@@ -4,9 +4,11 @@
   "private": true,
   "description": "SLM-OSS weekly informe generator with a shared ticket database",
   "license": "UNLICENSED",
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning server/server.js",
-    "test": "node --disable-warning=ExperimentalWarning --test tests/core.test.js tests/server.test.js"
+    "start": "node server/server.js",
+    "test": "node --test tests/core.test.js tests/server.test.js"
   }
 }

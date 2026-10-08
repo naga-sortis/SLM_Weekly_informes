@@ -10,6 +10,14 @@
  */
 'use strict';
 
+// node:sqlite prints an "ExperimentalWarning" on some Node versions; it is harmless, so hide only that one.
+const emitWarning = process.emitWarning;
+process.emitWarning = function (warning, ...rest) {
+  const text = String(warning && warning.message || warning);
+  const type = typeof rest[0] === 'string' ? rest[0] : (rest[0] && rest[0].type) || (warning && warning.name);
+  if (type === 'ExperimentalWarning' && /sqlite/i.test(text)) return;
+  return emitWarning.call(process, warning, ...rest);
+};
 const { DatabaseSync } = require('node:sqlite');
 const fs = require('node:fs');
 const path = require('node:path');

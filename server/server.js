@@ -14,6 +14,16 @@
  */
 'use strict';
 
+// Check the Node.js version first, so an old Node gives a clear message instead of a cryptic error.
+(function checkNode() {
+  var v = process.versions.node.split('.').map(Number);
+  if (v[0] < 22 || (v[0] === 22 && v[1] < 13)) {
+    console.error('SLM Weekly Informes needs Node.js 22.13 or newer (it uses the built-in SQLite database).');
+    console.error('This server has Node.js ' + process.versions.node + '. Install the current LTS from https://nodejs.org/ and run "npm start" again.');
+    process.exit(1);
+  }
+})();
+
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
