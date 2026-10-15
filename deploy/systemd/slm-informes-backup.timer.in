@@ -1,0 +1,11 @@
+# Runs the database backup every day; if the server was off at that time, it runs at the next start.
+[Unit]
+Description=Daily backup of the SLM Weekly Informes database
+
+[Timer]
+OnCalendar=*-*-* 02:15:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

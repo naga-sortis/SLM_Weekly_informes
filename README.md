@@ -151,23 +151,39 @@ Notes for production:
 * Only the page files are served (never the database, server code or tests); security headers and a strict Content-Security-Policy are set.
 * Without `SLM_BASIC_AUTH` there is no login: restrict access with the firewall/VPN. For HTTPS put a reverse proxy (nginx, IIS, Apache) in front and bind `HOST=127.0.0.1`.
 * Back up the `data/` folder (or use the Backup button) regularly. The database contains personal data from the tickets — keep it on the server only; it is excluded from git.
-* Run it as a service, e.g. systemd:
+* Run it as a **systemd service** (Linux) so it survives reboots, automatic updates and crashes — see below.
+
+### Installing as a service (Linux / systemd)
 
 ```
-[Unit]
-Description=SLM Weekly Informes
-After=network.target
-
-[Service]
-WorkingDirectory=/opt/slm-weekly-informes
-ExecStart=/usr/bin/npm start
-Environment=PORT=8080 SLM_DB=/var/lib/slm/slm-informes.sqlite
-Restart=on-failure
-User=slm
-
-[Install]
-WantedBy=multi-user.target
+cd <your copy of this repository>
+git pull
+sudo bash deploy/preflight.sh            # read-only checks, changes nothing
+sudo bash deploy/install-service.sh      # install (or update) the service
 ```
+
+The **pre-flight checks** verify: systemd, Node.js ≥ 22.13 reachable by the service user (an nvm install under /root or /home is not), built-in SQLite, all files, the unit tests and a test start of the real server, the port, manually started copies, the existing database (integrity + counts), free disk space, that the data folder is outside the code, automatic updates, firewall, SELinux and clock sync. Any FAIL stops the installer before anything is changed.
+
+The **installer**:
+
+* creates a system user `slm` (no login) and the data folder `/var/lib/slm-informes` (database + `backups/`);
+* stops a manually started copy and moves its database there with a verified copy (the old file is renamed `*.moved-<date>`, not deleted);
+* copies the code to `/opt/slm-weekly-informes` — code and data are separate, so `git pull`, re-installs and OS updates never touch the data;
+* writes the settings to `/etc/slm-informes/slm-informes.env` (first time only — your edits are kept) and the units `slm-informes.service`, `slm-informes-backup.service` and `slm-informes-backup.timer` (templates in `deploy/systemd/`);
+* enables everything at boot (`Restart=always`, hardened: the program can only write to the data folder), checks that the page answers and makes a first backup.
+
+| Task | Command |
+|---|---|
+| Status / logs | `systemctl status slm-informes` · `journalctl -u slm-informes -f` |
+| Restart after editing settings | `sudo systemctl restart slm-informes` |
+| Update to a new version | `git pull && sudo bash deploy/install-service.sh --yes` |
+| Backups | daily at 02:15 in `/var/lib/slm-informes/backups` (newest 30 kept, `SLM_BACKUP_KEEP`); copy them to another machine too |
+| Backup now | `sudo systemctl start slm-informes-backup` |
+| Restore | `sudo bash deploy/restore.sh /var/lib/slm-informes/backups/<file>.sqlite` (the current database is saved first) |
+| Check the database | `sudo -u slm SLM_DB=/var/lib/slm-informes/slm-informes.sqlite node server/backup.js --check` |
+| Remove the service (data kept) | `sudo bash deploy/uninstall-service.sh` |
+
+Options for the scripts: `PORT`, `HOST`, `DATA_DIR`, `INSTALL_DIR`, `NODE_BIN`, `OLD_DB` (database to move if it is not in `./data`), `FORCE_MIGRATE=1`, e.g. `sudo PORT=8081 bash deploy/install-service.sh`.
 
 On Windows Server use NSSM or the Task Scheduler (“At startup”) to run `npm start` in the project folder.
 
@@ -192,6 +208,8 @@ assets/js/docx-report.js Word document builder
 assets/js/app.js         UI
 server/server.js         optional Node server (page + team database API)
 server/db.js             SQLite database: imports, change log, manual classifications
+server/backup.js         consistent database backup / copy / integrity check
+deploy/                  pre-flight checks, systemd installer, restore, uninstall
 tests/                   unit tests (synthetic data)
 vendor/                  SheetJS 0.20.3 (Apache-2.0), Chart.js 4 (MIT), docx 9 (MIT)
 ```

@@ -1,0 +1,27 @@
+# Daily copy of the SLM Weekly Informes database (safe while the server runs).
+[Unit]
+Description=Backup of the SLM Weekly Informes database
+After=@SERVICE_NAME@.service
+
+[Service]
+Type=oneshot
+User=@SERVICE_USER@
+Group=@SERVICE_USER@
+WorkingDirectory=@INSTALL_DIR@
+EnvironmentFile=/etc/@SERVICE_NAME@/@SERVICE_NAME@.env
+# Keeps the newest SLM_BACKUP_KEEP copies (default 30).
+ExecStart=@NODE_BIN@ @INSTALL_DIR@/server/backup.js @DATA_DIR@/backups ${SLM_BACKUP_KEEP}
+UMask=0027
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=@DATA_DIR@
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
