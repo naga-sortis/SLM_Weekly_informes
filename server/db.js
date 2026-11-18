@@ -69,6 +69,24 @@ const SCHEMA = `
     at TEXT NOT NULL,
     note TEXT NOT NULL DEFAULT ''
   );
+  CREATE TABLE IF NOT EXISTS resolver_overrides (
+    ticket_id TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL,          -- XSP00025 / XSP00027 (a Sortis group) or OTHER (checked: another group resolved it)
+    resolver_user TEXT NOT NULL DEFAULT '',
+    comment TEXT NOT NULL,
+    user_name TEXT NOT NULL,
+    at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS resolver_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id TEXT NOT NULL,
+    action TEXT NOT NULL,            -- set | remove
+    group_id TEXT,
+    resolver_user TEXT NOT NULL DEFAULT '',
+    comment TEXT NOT NULL DEFAULT '',
+    user_name TEXT NOT NULL,
+    at TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS classification_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticket_id TEXT NOT NULL,
@@ -139,6 +157,46 @@ class SlmDatabase {
     this.file = file;
     this.db = new DatabaseSync(file);
     this.db.exec(SCHEMA);
+    // Databases created before the two-file version: add the file role of each sheet.
+    if (!this.db.prepare('PRAGMA table_info(sheet_headers)').all().some((c) => c.name === 'role')) {
+      this.db.exec("ALTER TABLE sheet_headers ADD COLUMN role TEXT NOT NULL DEFAULT ''");
+    }
+    this.inferMissingRoles();
+  }
+
+  /**
+   * Sheets saved without a file role (older imports): the sheets saved by the same import come from
+   * the same workbook, so they get the role of that workbook — mostly Failure tickets → INC, else OT.
+   */
+  inferMissingRoles() {
+    const missing = this.db.prepare("SELECT sheet, headers, last_import FROM sheet_headers WHERE role = ''").all();
+    if (!missing.length) return;
+    const groups = new Map();
+    for (const h of missing) {
+      const k = h.last_import === null ? `sheet:${h.sheet}` : `import:${h.last_import}`;
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(h);
+    }
+    const setRole = this.db.prepare('UPDATE sheet_headers SET role = ? WHERE sheet = ?');
+    for (const list of groups.values()) {
+      const types = new Map(); // ticket → is failure
+      for (const h of list) {
+        const headers = JSON.parse(h.headers);
+        const hdr = C.findHeader([headers]);
+        const typeKey = hdr && hdr.map.ticketType !== undefined ? headers[hdr.map.ticketType] : null;
+        if (!typeKey) continue;
+        for (const r of this.db.prepare('SELECT ticket_id, data FROM ticket_rows WHERE sheet = ?').all(h.sheet)) {
+          if (types.has(r.ticket_id)) continue;
+          const rows = JSON.parse(r.data);
+          types.set(r.ticket_id, C.categoryOf(rows[0] && rows[0][typeKey]) === 'INC');
+        }
+      }
+      if (!types.size) continue;
+      let failures = 0;
+      for (const v of types.values()) if (v) failures++;
+      const role = failures * 2 >= types.size ? 'INC' : 'OT';
+      for (const h of list) setRole.run(role, h.sheet);
+    }
   }
 
   close() {
@@ -155,6 +213,7 @@ class SlmDatabase {
       imports: one('SELECT COUNT(*) AS n FROM imports').n,
       lastImport: last || null,
       classifications: one('SELECT COUNT(*) AS n FROM classifications').n,
+      resolvers: one('SELECT COUNT(*) AS n FROM resolver_overrides').n,
     };
   }
 
@@ -173,9 +232,17 @@ class SlmDatabase {
     const pending = []; // writes to perform
     let rowsRead = 0;
 
+    const roleOf = this.db.prepare('SELECT role FROM sheet_headers WHERE sheet = ?');
+    const names = new Set();
     for (const sheet of payload.sheets) {
-      const name = String(sheet.name || '').slice(0, 120);
+      let name = String(sheet.name || '').slice(0, 120);
       if (!name || !Array.isArray(sheet.rows)) continue;
+      const role = sheet.role === 'INC' || sheet.role === 'OT' ? sheet.role : '';
+      // The same sheet name already holds the other weekly file: keep the two apart.
+      const stored = roleOf.get(name);
+      if (role && stored && stored.role && stored.role !== role) name = C.sheetNameForRole(name, role).slice(0, 120);
+      if (names.has(name)) continue;
+      names.add(name);
       const header = C.findHeader(sheet.rows);
       if (!header || header.map.ticketId === undefined) continue; // not a ticket sheet
       const headerRow = sheet.rows[header.index] || [];
@@ -224,7 +291,7 @@ class SlmDatabase {
       }
       let notInFile = 0;
       for (const id of existing.keys()) if (!byTicket.has(id)) notInFile++;
-      sheetResults.push({ sheet: name, tickets: byTicket.size, added, updated, unchanged, notInFile, changedFields, examples,
+      sheetResults.push({ sheet: name, role, tickets: byTicket.size, added, updated, unchanged, notInFile, changedFields, examples,
         headers: cols.map((x) => x.name) });
     }
     if (!sheetResults.length) throw new UserError('The file has no ticket sheet (no "Ticket ID" header row found).');
@@ -253,15 +320,17 @@ class SlmDatabase {
           for (const d of p.diffs) chg.run(importId, p.sheet, p.id, d.field, d.old, d.new);
         }
       }
-      const hdr = this.db.prepare(`INSERT INTO sheet_headers (sheet, headers, last_import) VALUES (?, ?, ?)
-        ON CONFLICT(sheet) DO UPDATE SET headers = excluded.headers, last_import = excluded.last_import`);
+      const hdr = this.db.prepare(`INSERT INTO sheet_headers (sheet, headers, last_import, role) VALUES (?, ?, ?, ?)
+        ON CONFLICT(sheet) DO UPDATE SET headers = excluded.headers, last_import = excluded.last_import,
+          role = CASE WHEN excluded.role <> '' THEN excluded.role ELSE sheet_headers.role END`);
       for (const s of sheetResults) {
         const prev = this.db.prepare('SELECT headers FROM sheet_headers WHERE sheet = ?').get(s.sheet);
         const merged = s.headers.slice();
         if (prev) for (const h of JSON.parse(prev.headers)) if (!merged.includes(h)) merged.push(h);
-        hdr.run(s.sheet, JSON.stringify(merged), importId);
+        hdr.run(s.sheet, JSON.stringify(merged), importId, s.role);
       }
       this.db.exec('COMMIT');
+      this.inferMissingRoles();
       result.importId = importId;
       return result;
     } catch (e) {
@@ -273,7 +342,7 @@ class SlmDatabase {
   /** Rebuild every sheet (header row + one row per stored Excel row), plus which tickets were not in the last file. */
   exportSheets() {
     const sheets = [];
-    for (const h of this.db.prepare('SELECT sheet, headers, last_import FROM sheet_headers ORDER BY rowid').all()) {
+    for (const h of this.db.prepare('SELECT sheet, headers, last_import, role FROM sheet_headers ORDER BY rowid').all()) {
       const headers = JSON.parse(h.headers);
       const rows = [headers];
       const notInLatest = [];
@@ -284,7 +353,7 @@ class SlmDatabase {
         }
         if (r.last_seen_import !== h.last_import) notInLatest.push(r.ticket_id);
       }
-      sheets.push({ name: h.sheet, rows, notInLatest });
+      sheets.push({ name: h.sheet, role: h.role || '', rows, notInLatest });
     }
     return sheets;
   }
@@ -304,6 +373,7 @@ class SlmDatabase {
       changes: this.db.prepare(`SELECT ch.sheet, ch.field, ch.old_value, ch.new_value, i.file_name, i.imported_at, i.user_name
         FROM changes ch JOIN imports i ON i.id = ch.import_id WHERE ch.ticket_id = ? ORDER BY ch.id`).all(id),
       classifications: this.db.prepare('SELECT action, category, user_name, at, note FROM classification_log WHERE ticket_id = ? ORDER BY id').all(id),
+      resolvers: this.db.prepare('SELECT action, group_id, resolver_user, comment, user_name, at FROM resolver_log WHERE ticket_id = ? ORDER BY id').all(id),
     };
   }
 
@@ -341,6 +411,74 @@ class SlmDatabase {
       this.db.prepare('DELETE FROM classifications WHERE ticket_id = ?').run(id);
       this.db.prepare('INSERT INTO classification_log (ticket_id, action, category, user_name, at, note) VALUES (?, ?, NULL, ?, ?, ?)')
         .run(id, 'remove', name, nowIso(), '');
+      this.db.exec('COMMIT');
+    } catch (e) { this.db.exec('ROLLBACK'); throw e; }
+    return { ticket_id: id };
+  }
+
+  /**
+   * Team activity, newest first: imports, Incidencia / OT classifications and “Resolved by” changes.
+   * @param {{since?:string, limit?:number}} opts  since: ISO time — only events at or after it (the client
+   *        removes the ones it already has), so nothing is missed when two events share the same time.
+   */
+  activity(opts = {}) {
+    const since = typeof opts.since === 'string' && /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(opts.since) ? opts.since : '';
+    const limit = Math.max(1, Math.min(500, Number(opts.limit) || 100));
+    const q = (sql) => this.db.prepare(sql).all(since, limit);
+    const events = [
+      ...q(`SELECT id, imported_at AS at, user_name, file_name, added, updated, unchanged, not_in_file FROM imports WHERE imported_at >= ? ORDER BY imported_at DESC, id DESC LIMIT ?`)
+        .map((r) => ({ key: `import:${r.id}`, kind: 'import', at: r.at, user: r.user_name, ticket: '', action: 'import', value: r.file_name,
+          detail: `${r.added} new · ${r.updated} updated · ${r.unchanged} unchanged · ${r.not_in_file} kept` })),
+      ...q(`SELECT id, at, user_name, ticket_id, action, category, note FROM classification_log WHERE at >= ? ORDER BY at DESC, id DESC LIMIT ?`)
+        .map((r) => ({ key: `classification:${r.id}`, kind: 'classification', at: r.at, user: r.user_name, ticket: r.ticket_id, action: r.action, value: r.category || '', detail: r.note || '' })),
+      ...q(`SELECT id, at, user_name, ticket_id, action, group_id, resolver_user, comment FROM resolver_log WHERE at >= ? ORDER BY at DESC, id DESC LIMIT ?`)
+        .map((r) => ({ key: `resolver:${r.id}`, kind: 'resolver', at: r.at, user: r.user_name, ticket: r.ticket_id, action: r.action, value: r.group_id || '',
+          engineer: r.resolver_user || '', detail: r.comment || '' })),
+    ];
+    events.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : (a.key < b.key ? 1 : -1)));
+    return { events: events.slice(0, limit), now: nowIso() };
+  }
+
+  resolvers() {
+    return this.db.prepare('SELECT ticket_id, group_id, resolver_user, comment, user_name, at FROM resolver_overrides').all();
+  }
+
+  /**
+   * Manual “Resolved by”: group = a Sortis group ID (e.g. XSP00025 / XSP00027) or OTHER (checked: another
+   * group really resolved it). A comment explaining the change and the reviewer's name are required.
+   */
+  setResolver(ticketId, group, resolverUser, comment, user) {
+    const id = String(ticketId || '').trim().slice(0, 60);
+    const g = String(group || '').trim().toUpperCase();
+    const ru = String(resolverUser || '').trim().slice(0, 120);
+    const txt = String(comment || '').trim().slice(0, 1000);
+    const name = String(user || '').trim().slice(0, 80);
+    if (!id) throw new UserError('Missing ticket ID.');
+    if (!/^[A-Z0-9_-]{2,40}$/.test(g)) throw new UserError('Choose the group that resolved the ticket.');
+    if (txt.length < 5) throw new UserError('Please explain the reason for the change (at least 5 characters).');
+    if (!name) throw new UserError('Please enter your name before changing “Resolved by”.');
+    const at = nowIso();
+    this.db.exec('BEGIN');
+    try {
+      this.db.prepare(`INSERT INTO resolver_overrides (ticket_id, group_id, resolver_user, comment, user_name, at) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(ticket_id) DO UPDATE SET group_id = excluded.group_id, resolver_user = excluded.resolver_user, comment = excluded.comment,
+          user_name = excluded.user_name, at = excluded.at`).run(id, g, ru, txt, name, at);
+      this.db.prepare('INSERT INTO resolver_log (ticket_id, action, group_id, resolver_user, comment, user_name, at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(id, 'set', g, ru, txt, name, at);
+      this.db.exec('COMMIT');
+    } catch (e) { this.db.exec('ROLLBACK'); throw e; }
+    return { ticket_id: id, group_id: g, resolver_user: ru, comment: txt, user_name: name, at };
+  }
+
+  removeResolver(ticketId, user) {
+    const id = String(ticketId || '').trim().slice(0, 60);
+    const name = String(user || '').trim().slice(0, 80);
+    if (!name) throw new UserError('Please enter your name.');
+    this.db.exec('BEGIN');
+    try {
+      this.db.prepare('DELETE FROM resolver_overrides WHERE ticket_id = ?').run(id);
+      this.db.prepare("INSERT INTO resolver_log (ticket_id, action, group_id, resolver_user, comment, user_name, at) VALUES (?, 'remove', NULL, '', '', ?, ?)")
+        .run(id, name, nowIso());
       this.db.exec('COMMIT');
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
     return { ticket_id: id };

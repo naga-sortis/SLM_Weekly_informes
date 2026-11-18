@@ -1,18 +1,52 @@
 # SLM Weekly Informes
 
-Static web page that turns the weekly Oceane / BRISE ticket export (Excel) into the
+Static web page that turns the weekly Oceane / BRISE ticket exports (Excel — the Incidencias file and the OTs file) into the
 **Informe SLM-OSS – Gestores Propietarios** (Word) and an Excel file with the extracted fields.
 
 Everything runs **in the browser**: the Excel file is never uploaded anywhere. All libraries are bundled in `vendor/`, so the page needs no CDN.
 
 ## How to use
 
-1. Open the page and drop the ticket export (`.xlsx`, `.xls` or `.csv`).
-   The sheet with the `Ticket ID` header row is found automatically. If there are several, the largest one is used, and you can switch sheets.
+1. Open the page and drop the **two weekly exports** (or select both with *browse*):
+   * the **Incidencias file**, mostly Failure tickets (e.g. `Tickets - SLM SORTIS-WEEK_XSP00025_….xlsx`);
+   * the **OTs file**, mostly work orders (e.g. `Tickets - SLM SORTIS-WEEK_…_USERS.xlsx`, queue XSP00027).
+
+   The kind of each file is detected from its content, and you can change it in the list under the upload box. Dropping a new file replaces the loaded file of the same kind. A **single file** still works exactly as before: the largest ticket sheet is used and every ticket is counted.
 2. Pick the **report week**. By default it's the latest week in the file. The week number, its dates (Monday–Sunday) and its month are used everywhere, on the page and in Word. A week that spans two months is labelled e.g. “Septiembre / Octubre 2026”. The tables also show the previous weeks (5 by default, 1–8).
-3. Check the **consistency checks** panel. If any check fails, the Word export is blocked.
-4. Optionally fill in the cover, revision table and the “Incidencias destacadas / Otros trabajos” bullet points.
-5. **Download Word report** or **Download extracted data (Excel)**.
+3. Open the **Manual review** tab and review the suspected tickets, the tickets resolved by another group and the tickets without gestor (see below).
+4. Check the **consistency checks** panel. If any check fails, the Word export is blocked.
+5. Optionally fill in the cover, revision table and the “Incidencias destacadas / Otros trabajos” bullet points.
+6. **Download Word report** or **Download extracted data (Excel)**.
+
+Every section has a **?** button that explains what it shows and how to use it, and **Help & tutorial** (top right) starts a guided tour of the page.
+
+## Two weekly files
+
+* Both files are merged by Ticket ID: a ticket that is in both files (or in several sheets) is **counted once**. The *Source sheets* tab shows which file each sheet comes from and how many tickets the files share.
+* **Suspected tickets**: a non-Failure ticket that is only in the Incidencias file, or a Failure that is only in the OTs file. They are counted by the usual rules until somebody classifies them as Incidencia or OT in *Manual review*.
+* **Counting rule** (step 2, on by default when both files are loaded): a ticket is counted if it is still **open**, was **returned** (DEVUELTO), or was **resolved by XSP00025 / XSP00027** (*Restoration group ID*). Tickets resolved by another group are not counted and are listed in *Manual review*. A consistency check confirms that none is counted.
+* **Manual “Resolved by”**: when another gestor took over a ticket in Oceane although the Sortis team resolved it, change its *Resolved by* to XSP00025 or XSP00027 (optionally with the engineer) and **explain the reason in the comment** (required). The ticket is then counted, in the reports and in the Sortis team tab. Choosing “Another group really resolved it” marks it as checked and keeps it out. The value of the Excel is always kept and shown next to the change.
+* The Word report states that it is based on the two files and on the counting rule. The optional section **Anexo: ajustes manuales** (off by default) lists every manual change of the report weeks with the reason, who made it and when.
+
+## Manual review
+
+The *Manual review* tab lists the tickets of the chosen period (report week, weeks shown in the tables, report month or all dates) that need a person:
+
+| Reason | What to do |
+|---|---|
+| Suspected type | Open the ticket, then click **Incidencia** or **OT** |
+| Resolved by another group | **Change…** → XSP00025 / XSP00027 with a comment, or confirm “another group” |
+| Sin gestor identificado | Click **Incidencia** or **OT** |
+
+Filter by reason and status (*Pending review* / *Reviewed*), search, apply a decision to every pending ticket of the list, or export the list to Excel. Every decision is recorded with the name and the date. On the server it is shared with the team and kept in the history of the ticket; in file mode it is kept in the browser.
+
+## Team activity (server)
+
+**Team activity** (in the team database box) is a live list of what everybody does: file imports, Incidencia / OT reviews and *Resolved by* changes, with name and time. It is synchronised every 10 seconds (paused while the browser tab is hidden):
+
+* When another user reviews a ticket, your page reloads the shared reviews and recalculates the figures by itself, and a message says who changed what.
+* When another user imports new files, a bar offers to show the updated database, so your work is never interrupted.
+* The orange number on the button counts what other users did since you last opened the list.
 
 ## Extracted fields
 
@@ -107,22 +141,13 @@ Every report is verified before it can be exported:
 * 2.2 totals per week = “Nuevos durante la semana” (Incidencias), and each gestor appears only once.
 * 2.3 TOTAL = the number of cases listed in 2.4, and every listed case was really pending at the cut-off.
 * The monthly charts cover every case of the month exactly once, and the report month contains the report week.
+* Each ticket is counted once (tickets present in both files are merged); with the counting rule on, no case resolved by another group is counted; every manual “Resolved by” change has a comment.
 
 Unit tests (synthetic data only) run with `npm test` (Node.js ≥ 22.13). They also run in the GitHub Actions workflow before every deployment.
 
 ## Source sheets tab
 
 The first tab analyses every sheet in the workbook (Incidencias, OTs, Asignados… whatever is present) before anything else: header row, rows and unique tickets, duplicated rows, invalid dates, date range, Incidencias vs OTs, types, statuses, years, restoration groups, missing expected columns and warnings. It also shows how many tickets each pair of sheets has in common, and lets you browse, search and export the raw rows of any sheet.
-
-## Manual review of “Sin gestor identificado”
-
-In the *Sin gestor identificado* panel, each case has **Review: Incidencia / OT** buttons (also available in bulk for the filtered list and in the ticket dialog). A reviewed case:
-
-* is counted under the chosen category in every section (weekly, Month/Year, Sortis team, Word report) — the automatic category is kept and shown as “Auto”;
-* keeps your **name and the date** of the decision (column “Counted as”, ticket dialog, Excel export and Word section 2.4);
-* can be undone at any time (“Undo” restores the automatic rule).
-
-On the server the reviews are shared by the whole team and every change is logged. On GitHub Pages / file mode they are saved in this browser only.
 
 ## Running on a server (team database)
 
@@ -142,8 +167,8 @@ npm start                       # http://<server-ip>:8080/
 
 Weekly workflow:
 
-1. Upload the new weekly Excel. The report is computed in the browser as before, and a **preview** shows what would change in the database (new tickets, updated tickets, tickets not in this file).
-2. Type your name and click **Update database**. New rows are added, changed rows are updated (each changed field is logged with old/new value), and tickets missing from the new file are kept.
+1. Upload the two weekly files (Incidencias file + OTs file — or one of them). The report is computed in the browser as before, and a **preview** shows what would change in the database (new tickets, updated tickets, tickets not in the files).
+2. Type your name and click **Update the database**. New rows are added, changed rows are updated (each changed field is logged with old/new value), and tickets missing from the new files are kept. Each sheet remembers which kind of file it comes from; databases created by the previous version are recognised automatically (their sheets are the Incidencias file).
 3. **Use database** builds the report from the full history; **Import history** lists every import; **Backup** downloads a copy of the database.
 
 Notes for production:
@@ -206,6 +231,7 @@ assets/js/core.js        parsing, field extraction and report calculations (no D
 assets/js/charts.js      Chart.js configs and PNG rendering for Word
 assets/js/docx-report.js Word document builder
 assets/js/app.js         UI
+assets/js/help.js        help topics, “?” buttons and the guided tour
 server/server.js         optional Node server (page + team database API)
 server/db.js             SQLite database: imports, change log, manual classifications
 server/backup.js         consistent database backup / copy / integrity check

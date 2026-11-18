@@ -1,6 +1,6 @@
 {
   "name": "slm-weekly-informes",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "SLM-OSS weekly informe generator with a shared ticket database",
   "license": "UNLICENSED",

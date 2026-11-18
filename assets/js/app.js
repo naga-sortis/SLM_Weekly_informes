@@ -24,6 +24,8 @@
     server: null,        // team database info when the page is served by server/server.js
     source: { kind: 'none', label: '' }, // 'file' | 'db'
     cls: new Map(),      // manual classifications: ticket id → { category, user, at }
+    res: new Map(),      // manual “Resolved by”: ticket id → { group, user, comment, by, at }
+    files: [],           // uploaded workbooks: [{ name, sheets, date1904, role, roleInfo }] (Incidencias file + OTs file)
   };
 
   /* ------------------------------------------------------------------ */
@@ -49,6 +51,11 @@
   }
 
   class UserError extends Error {}
+
+  /** "?" button opening the help of a topic (see help.js). */
+  function helpButton(key) {
+    return window.SLMHelp ? window.SLMHelp.button(key) : null;
+  }
 
   let toastTimer = null;
   function toast(msg, isError) {
@@ -128,7 +135,7 @@
     const dz = $('#dropZone');
     const input = $('#fileInput');
     input.addEventListener('change', () => {
-      if (input.files && input.files[0]) loadFile(input.files[0]);
+      if (input.files && input.files.length) loadFiles(Array.from(input.files));
       input.value = '';
     });
     dz.addEventListener('keydown', (e) => {
@@ -143,8 +150,8 @@
       dz.classList.remove('drag');
     }));
     dz.addEventListener('drop', (e) => {
-      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-      if (f) loadFile(f);
+      const fl = e.dataTransfer && e.dataTransfer.files;
+      if (fl && fl.length) loadFiles(Array.from(fl));
     });
     // Dropping a file elsewhere on the page must not navigate away.
     window.addEventListener('dragover', (e) => e.preventDefault());
@@ -152,29 +159,104 @@
     $('#sheetSelect').addEventListener('change', () => useSheet($('#sheetSelect').value));
   }
 
-  async function loadFile(file) {
-    if (!/\.(xlsx|xlsm|xls|csv)$/i.test(file.name)) {
-      setStatus(`"${file.name}" is not an Excel/CSV file. Please choose a .xlsx, .xls or .csv file.`, 'error');
+  const ROLE_TXT = { INC: 'Incidencias file', OT: 'OTs file' };
+
+  async function readWorkbookFile(file) {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array', cellDates: false, cellFormula: false, cellHTML: false, cellStyles: false, dense: true });
+    const date1904 = !!(wb.Workbook && wb.Workbook.WBProps && wb.Workbook.WBProps.date1904);
+    const sheets = wb.SheetNames.map((name) => ({
+      name,
+      rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null, blankrows: true }),
+    }));
+    const detected = C.detectSheets(sheets);
+    if (!detected.some((d) => d.ok)) {
+      const partial = detected.find((d) => d.header);
+      throw new UserError(`“${file.name}”: could not find the ticket table. ${partial ? `Missing column(s): ${partial.missing.map((f) => C.FIELD_LABELS[f]).join(', ')}.` : 'No sheet contains a "Ticket ID" header row.'}`);
+    }
+    const roleInfo = C.detectFileRole(sheets, { date1904 });
+    return { name: file.name, sheets, date1904, role: roleInfo.role, roleInfo };
+  }
+
+  /**
+   * One or two weekly files: the Incidencias file (mostly failures, e.g. XSP00025) and the OTs file
+   * (mostly work orders, e.g. XSP00027 “USERS”). A new file replaces the loaded file of the same kind.
+   */
+  async function loadFiles(list) {
+    const bad = list.filter((f) => !/\.(xlsx|xlsm|xls|csv)$/i.test(f.name));
+    if (bad.length) {
+      setStatus(`"${bad[0].name}" is not an Excel/CSV file. Please choose .xlsx, .xls or .csv files.`, 'error');
       return;
     }
-    setStatus(`Reading ${file.name}…`, 'loading');
+    if (list.length > 2) {
+      setStatus('Choose at most two files: the Incidencias file and the OTs file of the same week.', 'error');
+      return;
+    }
+    setStatus(`Reading ${list.map((f) => f.name).join(' and ')}…`, 'loading');
     $('#warnings').hidden = true;
     await nextFrame();
     try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array', cellDates: false, cellFormula: false, cellHTML: false, cellStyles: false, dense: true });
-      const date1904 = !!(wb.Workbook && wb.Workbook.WBProps && wb.Workbook.WBProps.date1904);
-      const sheets = wb.SheetNames.map((name) => ({
-        name,
-        rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null, blankrows: true }),
-      }));
-      useWorkbook(sheets, file.name, date1904, { kind: 'file', label: file.name });
-      state.lastFile = { name: file.name, sheets, date1904 };
-      if (state.server) previewImport();
+      const read = [];
+      for (const f of list) read.push(await readWorkbookFile(f));
+      let next = state.source.kind === 'file' ? state.files.slice() : [];
+      const notes = [];
+      if (read.length === 2) {
+        next = read;
+      } else {
+        const nf = read[0];
+        const same = next.findIndex((f) => f.name === nf.name || f.role === nf.role);
+        if (same >= 0) {
+          if (next[same].name !== nf.name) notes.push(`“${nf.name}” replaces “${next[same].name}” (both are ${ROLE_TXT[nf.role]}s).`);
+          next[same] = nf;
+        } else {
+          next.push(nf);
+        }
+      }
+      useFiles(next);
+      if (notes.length) toast(notes.join(' '));
     } catch (err) {
       if (!(err instanceof UserError)) console.error(err);
       setStatus(err && err.message ? err.message : 'The file could not be read.', 'error');
     }
+  }
+
+  /** Use the loaded file(s) as the source of every report. */
+  function useFiles(files) {
+    state.files = files;
+    const combined = C.combineFiles(files.map((f) => ({ label: f.name, role: f.role, date1904: f.date1904, sheets: f.sheets })));
+    useWorkbook(combined, files.map((f) => f.name).join(' + '), files[0].date1904, { kind: 'file', label: files.map((f) => f.name).join(' + ') });
+    renderFiles();
+    if (state.server) previewImport();
+  }
+
+  /** The loaded files, their kind (changeable) and what the combination means. */
+  function renderFiles() {
+    const box = $('#filesList');
+    if (state.source.kind !== 'file' || !state.files.length) { box.hidden = true; box.replaceChildren(); return; }
+    box.hidden = false;
+    const roles = state.files.map((f) => f.role);
+    const clash = roles.length === 2 && roles[0] === roles[1];
+    const rows = state.files.map((f, i) => {
+      const sel = el('select', { 'aria-label': `Kind of file for ${f.name}` },
+        el('option', { value: 'INC', text: 'Incidencias file (mostly failures)' }),
+        el('option', { value: 'OT', text: 'OTs file (mostly work orders)' }));
+      sel.value = f.role;
+      sel.addEventListener('change', () => { state.files[i].role = sel.value; useFiles(state.files); });
+      const ri = f.roleInfo;
+      return el('div', { class: `file-row role-${f.role.toLowerCase()}` },
+        el('span', { class: `badge ${f.role === 'INC' ? 'inc' : 'ot'}`, text: ROLE_TXT[f.role] }),
+        el('span', { class: 'file-name', text: f.name, title: f.name }),
+        el('span', { class: 'muted small', text: `${ri.total.toLocaleString('en')} tickets · ${ri.failures.toLocaleString('en')} failures · ${ri.others.toLocaleString('en')} other types` }),
+        sel,
+        el('button', { type: 'button', class: 'btn small', text: 'Remove', title: 'Remove this file',
+          onclick: () => { const rest = state.files.filter((_, k) => k !== i); if (rest.length) useFiles(rest); else location.reload(); } }));
+    });
+    const hint = state.files.length === 1
+      ? el('p', { class: 'muted small', text: `Add the ${state.files[0].role === 'INC' ? 'OTs file (XSP00027 “USERS”)' : 'Incidencias file (XSP00025)'} of the same week to combine both — drop it above or browse.` })
+      : el('p', { class: clash ? 'status error' : 'muted small', text: clash
+        ? `⚠ Both files are marked as ${ROLE_TXT[roles[0]]}. Set the kind of each file so that suspected tickets are detected correctly.`
+        : 'Both files are combined: each ticket is counted once, even if it is in both files. Work orders found only in the Incidencias file and failures found only in the OTs file go to the Manual review tab.' });
+    box.replaceChildren(el('div', { class: 'files-head' }, el('strong', { text: `Loaded file${state.files.length > 1 ? 's' : ''}` }), helpButton('files')), ...rows, hint);
   }
 
   /** Use a workbook (uploaded file or team database) as the source of every report. */
@@ -193,24 +275,34 @@
     state.fileName = label;
     state.source = source;
     state.analysis = null;
-    fillSheetSelect(usable);
+    // Both kinds of file present (Incidencias + OTs): combine every ticket sheet and count only the cases
+    // resolved by the Sortis groups. One file only: exactly as before (largest sheet, every case counted).
+    const roleOf = new Map(sheets.map((s) => [s.name, s.role || '']));
+    const roles = new Set(usable.map((d) => roleOf.get(d.name)).filter(Boolean));
+    state.combined = roles.has('INC') && roles.has('OT');
+    $('#onlySortis').checked = state.combined;
+    fillSheetSelect(usable, roleOf);
     const best = usable.reduce((a, b) => (b.rows > a.rows ? b : a));
-    $('#sheetSelect').value = best.name;
-    useSheet(best.name);
+    const first = state.combined ? '__all__' : best.name;
+    $('#sheetSelect').value = first;
+    useSheet(first);
     renderSources();
   }
 
-  function fillSheetSelect(usable) {
+  function fillSheetSelect(usable, roleOf) {
     const sel = $('#sheetSelect');
     sel.replaceChildren();
-    for (const d of usable) sel.appendChild(el('option', { value: d.name, text: `${d.name} (${d.rows.toLocaleString('en')} rows)` }));
-    if (usable.length > 1) sel.appendChild(el('option', { value: '__all__', text: 'All ticket sheets combined' }));
+    const tag = (n) => (state.combined && roleOf && roleOf.get(n) ? ` — ${ROLE_TXT[roleOf.get(n)]}` : '');
+    if (usable.length > 1 && state.combined) sel.appendChild(el('option', { value: '__all__', text: 'Both files combined — Incidencias + OTs (recommended)' }));
+    for (const d of usable) sel.appendChild(el('option', { value: d.name, text: `${d.name}${tag(d.name)} (${d.rows.toLocaleString('en')} rows)` }));
+    if (usable.length > 1 && !state.combined) sel.appendChild(el('option', { value: '__all__', text: 'All ticket sheets combined' }));
   }
 
   function useSheet(name) {
     const usable = state.detected.filter((d) => d.ok).map((d) => d.name);
     const chosen = name === '__all__' ? state.sheets.filter((s) => usable.includes(s.name)) : state.sheets.filter((s) => s.name === name);
     const ex = C.extractTickets(chosen, { date1904: state.date1904 });
+    C.markSources(ex.tickets, state.sheets);
     if (!ex.tickets.length) {
       setStatus('No tickets with a valid creation date were found in this sheet.', 'error');
       return;
@@ -231,6 +323,7 @@
     $('#emptyState').hidden = true;
     // Every ticket sheet of the file, merged (Sortis team view + ticket details)
     const allEx = C.extractTickets(state.sheets.filter((s) => usable.includes(s.name)), { date1904: state.date1904 });
+    C.markSources(allEx.tickets, state.sheets);
     state.allTickets = allEx.tickets;
     state.byId = new Map(state.allTickets.map((t) => [t.id, t]));
     applyCls();
@@ -273,6 +366,7 @@
     $('#weeksShown').addEventListener('change', recompute);
     $('#monthsBack').addEventListener('change', recompute);
     $('#inferGestor').addEventListener('change', recompute);
+    $('#onlySortis').addEventListener('change', recompute);
     $('#checksToggle').addEventListener('click', () => {
       const list = $('#checksList');
       list.hidden = !list.hidden;
@@ -311,10 +405,25 @@
     }
   }
 
+  /** Whether only the cases resolved by the Sortis groups (or still open / returned) are counted. */
+  function countRule() {
+    return $('#onlySortis').checked ? slmGroups().map((g) => g.toUpperCase()) : null;
+  }
+
+  /** The tickets the reports count (see countRule). Also marks every ticket with t.counted. */
+  function reportTickets() {
+    const rule = countRule();
+    const set = rule ? new Set(rule) : null;
+    for (const t of state.tickets) t.counted = !set || C.isCountable(t, set);
+    return set ? state.tickets.filter((t) => t.counted) : state.tickets;
+  }
+
   function recompute() {
     if (!state.tickets.length) return;
     refreshTrendYears();
-    state.report = C.computeReport(state.tickets, {
+    state.counted = reportTickets();
+    state.report = C.computeReport(state.counted, {
+      countRule: countRule(),
       weeks: selectedWeeks(),
       slmGroups: slmGroups(),
       monthsBack: Number($('#monthsBack').value) || 7,
@@ -326,6 +435,7 @@
     recomputePeriod();
     fillTeamQueues();
     recomputeTeam();
+    renderReview();
   }
 
   /* ------------------------------------------------------------------ */
@@ -361,7 +471,7 @@
 
   function recomputePeriod() {
     if (!state.tickets.length || !$('#pYear').value) return;
-    state.period = C.computePeriod(state.tickets, {
+    state.period = C.computePeriod(state.counted || state.tickets, {
       year: Number($('#pYear').value),
       month: Number($('#pMonth').value) || null,
       slmGroups: slmGroups(),
@@ -505,7 +615,7 @@
 
     const shown = list.slice(0, st.limit);
     const table = el('table', { class: 'data-table' },
-      el('thead', null, el('tr', null, ['Ticket ID', 'Creation date', 'Week', 'Counted as', 'Review: Incidencia / OT', 'Status', 'Current action (as in the Excel)', 'Reason', 'Gestor mentioned in description', 'Description']
+      el('thead', null, el('tr', null, ['Ticket ID', 'Creation date', 'Week', 'Counted as', 'Review: Incidencia / OT', 'Resolved by', 'Status', 'Current action (as in the Excel)', 'Reason', 'Gestor mentioned in description', 'Description']
         .map((h) => el('th', { text: h, style: 'cursor:default' })))),
       el('tbody', null, shown.length ? shown.map((t) => el('tr', null,
         el('td', null, tidButton(t.id)),
@@ -513,17 +623,18 @@
         el('td', { text: `${t.weekYear}-S${String(t.week).padStart(2, '0')}` }),
         el('td', { text: (t.category === 'INC' ? 'Incidencia' : `OT (${t.type})`) + (t.classification ? ' · manual' : '') }),
         el('td', null, reviewCell(t)),
+        el('td', null, resolverCell(t)),
         el('td', { text: t.status }),
         t.action ? el('td', { text: t.action, title: t.action }) : el('td', null, el('span', { class: 'empty-val', text: '(empty)' })),
         el('td', { class: 'reason', text: C.noGestorReason(t).label }),
         el('td', { text: t.gestorDesc || '—' }),
         el('td', { class: 'desc', text: t.description.replace(/\s+/g, ' '), title: t.description.slice(0, 1500) })))
-        : el('tr', null, el('td', { colspan: 10, class: 'muted', text: 'No tickets match the filter.' }))));
+        : el('tr', null, el('td', { colspan: 11, class: 'muted', text: 'No tickets match the filter.' }))));
 
     box.replaceChildren(...[
       el('div', { class: 'ng-head' },
         el('div', null,
-          el('h4', { text: `Sin gestor identificado — ${tickets.length} ticket(s) ${scopeTxt}` }),
+          el('h4', null, `Sin gestor identificado — ${tickets.length} ticket(s) ${scopeTxt}`, helpButton('nogestor')),
           el('p', { class: failures ? 'small' : 'ok-note', style: failures ? 'color:var(--err-text);margin:0' : 'margin:0',
             text: failures ? `⚠ ${failures} ticket(s) have an action the tool could not read as GESTOR - PROBLEMA - TÉCNICO — please check them.`
               : '✔ None of these is a reading error: the Excel has no gestor in “Current action” for them (see the reason of each ticket).' })),
@@ -539,12 +650,13 @@
   function exportNoGestor(list, scopeTxt) {
     try {
       const aoa = [['Ticket ID', 'Creation date', 'Week (ISO)', 'Ticket type', 'Counted as', 'Manual review', 'Reviewed by', 'Reviewed at', 'Status', 'Current action', 'Reason', 'Gestor mentioned in description',
-        'Initiator - Group ID', 'Initiator - Group abbreviation name', 'Description']];
+        'Initiator - Group ID', 'Initiator - Group abbreviation name', 'Description', 'Restoration group ID (Excel)', 'Resolved by (manual)', 'Resolved by — comment']];
       for (const t of list) {
-        const c = t.classification;
+        const c = t.classification, o = t.resolverOverride;
         aoa.push([t.id, C.toExcelSerial(t.created), `${t.weekYear}-S${String(t.week).padStart(2, '0')}`, t.type, t.category === 'INC' ? 'Incidencia' : 'OT',
           c ? (c.category === 'INC' ? 'Incidencia' : 'OT') : '', c ? c.user : '', c ? fmtIso(c.at) : '', t.status, t.action,
-          C.noGestorReason(t).label, t.gestorDesc, t.groupId, t.groupName, t.description.slice(0, 32000)]);
+          C.noGestorReason(t).label, t.gestorDesc, t.groupId, t.groupName, t.description.slice(0, 32000),
+          t.restorationGroupIdAuto ?? t.restorationGroupId, o ? groupTxt(o.group) : '', o ? `${o.comment} (${o.by}, ${fmtIso(o.at)})` : '']);
       }
       const ws = XLSX.utils.aoa_to_sheet(aoa);
       for (let r = 1; r < aoa.length; r++) { const ref = XLSX.utils.encode_cell({ r, c: 1 }); if (ws[ref]) ws[ref].z = 'yyyy-mm-dd hh:mm'; }
@@ -616,8 +728,9 @@
     if (!state.server) {
       // File mode (e.g. GitHub Pages): manual classifications stay in this browser
       $$('#btnUseDb, #btnImports, #btnBackup').forEach((b) => { b.hidden = true; });
-      $('#dbStats').textContent = '— not available here (file mode). Manual classifications are saved in this browser only.';
+      $('#dbStats').textContent = '— not available here (file mode). Manual reviews are saved in this browser only.';
       loadLocalClassifications();
+      loadLocalResolvers();
       return;
     }
     $('#privacyChip').classList.add('server');
@@ -629,12 +742,14 @@
     $('#btnBackup').addEventListener('click', () => { const a = el('a', { href: 'api/backup', download: '' }); document.body.appendChild(a); a.click(); a.remove(); });
     renderDbStats();
     await loadServerClassifications();
+    await loadServerResolvers();
+    initActivity();
     if (state.server.stats.tickets > 0) await loadDatabase();
   }
 
   function renderDbStats() {
     const st = state.server.stats;
-    $('#dbStats').textContent = `· ${st.tickets.toLocaleString('en')} tickets · ${st.imports} import(s) · ${st.classifications} manual classification(s)`;
+    $('#dbStats').textContent = `· ${st.tickets.toLocaleString('en')} tickets · ${st.imports} import(s) · ${st.classifications} manual classification(s) · ${st.resolvers || 0} “Resolved by” change(s)`;
     $('#dbLast').textContent = st.lastImport ? `Last import: ${st.lastImport.file_name} — ${fmtIso(st.lastImport.imported_at)}${st.lastImport.user_name ? ` by ${st.lastImport.user_name}` : ''}` : 'Empty: upload the weekly Excel and save it to start the history.';
     $('#btnUseDb').disabled = !st.tickets;
   }
@@ -650,8 +765,10 @@
     try {
       const j = await api.get('api/sheets');
       const notInLatest = new Map(j.sheets.map((s) => [s.name, new Set(s.notInLatest)]));
-      useWorkbook(j.sheets.map((s) => ({ name: s.name, rows: s.rows })), `Team database — ${j.stats.tickets.toLocaleString('en')} tickets from ${j.stats.imports} import(s)`, false,
+      useWorkbook(j.sheets.map((s) => ({ name: s.name, rows: s.rows, role: s.role || '', file: s.role ? `Team database — ${ROLE_TXT[s.role]}` : 'Team database' })),
+        `Team database — ${j.stats.tickets.toLocaleString('en')} tickets from ${j.stats.imports} import(s)`, false,
         { kind: 'db', label: 'Team database', notInLatest });
+      renderFiles();
       $('#dbPreview').hidden = true;
       setStatus('');
     } catch (err) {
@@ -659,21 +776,18 @@
     }
   }
 
-  function importPayload(f) {
-    const ok = C.detectSheets(f.sheets).filter((d) => d.ok).map((d) => d.name);
-    return {
-      fileName: f.name,
-      user: userName(),
-      sheets: f.sheets.filter((s) => ok.includes(s.name)).map((s) => {
-        const h = C.findHeader(s.rows);
-        let rows = s.rows.slice(h.index);
-        if (f.date1904) { // store every date on the usual 1900 basis
-          const dateCols = rows[0].map((x, i) => (/date|fecha/i.test(String(x || '')) ? i : -1)).filter((i) => i >= 0);
-          rows = rows.map((r, ri) => (ri === 0 ? r : r.map((v, ci) => (dateCols.includes(ci) && typeof v === 'number' ? v + 1462 : v))));
-        }
-        return { name: s.name, rows };
-      }),
-    };
+  /** The loaded file(s) for the team database: every ticket sheet with its file role (dates on the 1900 basis). */
+  function importPayload() {
+    const sheets = state.sheets.filter((s) => state.detected.some((d) => d.ok && d.name === s.name)).map((s) => {
+      const h = C.findHeader(s.rows);
+      let rows = s.rows.slice(h.index);
+      if (s.date1904) { // store every date on the usual 1900 basis
+        const dateCols = rows[0].map((x, i) => (/date|fecha/i.test(String(x || '')) ? i : -1)).filter((i) => i >= 0);
+        rows = rows.map((r, ri) => (ri === 0 ? r : r.map((v, ci) => (dateCols.includes(ci) && typeof v === 'number' ? v + 1462 : v))));
+      }
+      return { name: s.name, role: s.role || '', rows };
+    });
+    return { fileName: state.files.map((f) => f.name).join(' + ').slice(0, 300), user: userName(), sheets };
   }
 
   async function previewImport() {
@@ -681,19 +795,19 @@
     box.hidden = false;
     box.replaceChildren(el('span', { class: 'spinner', 'aria-hidden': 'true' }), ' Comparing this file with the team database…');
     try {
-      const r = await api.send('POST', 'api/import?dryRun=1', importPayload(state.lastFile));
+      const r = await api.send('POST', 'api/import?dryRun=1', importPayload());
       const t = r.totals;
       const examples = r.sheets.flatMap((s) => s.examples.map((e) => `${e.ticketId} (${s.sheet}): ${e.changes.slice(0, 3).map((c) => `${c.field} “${c.old || '—'}” → “${c.new || '—'}”`).join('; ')}`)).slice(0, 6);
-      box.replaceChildren(
-        el('div', null, el('strong', { text: `“${r.fileName}” compared with the team database: ` }),
+      box.replaceChildren(...[
+        el('div', null, el('strong', { text: `${state.files.length > 1 ? 'Both files' : `“${r.fileName}”`} compared with the team database: ` }),
           `${t.added.toLocaleString('en')} new · ${t.updated.toLocaleString('en')} updated · ${t.unchanged.toLocaleString('en')} unchanged · ${t.notInFile.toLocaleString('en')} in the database but not in this file (kept).`),
         el('div', { class: 'muted small', text: r.sheets.map((s) => `${s.sheet}: +${s.added} / ~${s.updated} / =${s.unchanged} / kept ${s.notInFile}`).join('  ·  ') }),
         examples.length ? el('ul', null, examples.map((x) => el('li', { class: 'small', text: x }))) : null,
         el('div', { class: 'row' },
           el('button', { type: 'button', class: 'btn primary small', onclick: commitImport, disabled: !(t.added || t.updated) },
-            t.added || t.updated ? 'Update the database with this file' : 'Nothing new to save'),
-          el('button', { type: 'button', class: 'btn small', onclick: () => { box.hidden = true; } }, 'Keep using this file only'),
-          el('span', { class: 'muted small', text: 'Now showing: this file only.' })));
+            t.added || t.updated ? `Update the database with ${state.files.length > 1 ? 'both files' : 'this file'}` : 'Nothing new to save'),
+          el('button', { type: 'button', class: 'btn small', onclick: () => { box.hidden = true; } }, `Keep using ${state.files.length > 1 ? 'these files' : 'this file'} only`),
+          el('span', { class: 'muted small', text: `Now showing: ${state.files.length > 1 ? 'these files' : 'this file'} only.` }))].filter(Boolean));
     } catch (err) {
       box.replaceChildren(el('span', { class: 'status error', text: `Could not compare with the database: ${err.message}` }));
     }
@@ -704,8 +818,9 @@
     const box = $('#dbPreview');
     box.replaceChildren(el('span', { class: 'spinner', 'aria-hidden': 'true' }), ' Saving to the team database…');
     try {
-      const r = await api.send('POST', 'api/import', importPayload(state.lastFile));
+      const r = await api.send('POST', 'api/import', importPayload());
       toast(`Database updated: ${r.totals.added} new, ${r.totals.updated} updated, ${r.totals.unchanged} unchanged.`);
+      pollActivity(false);
       await refreshServerStats();
       await loadDatabase();
     } catch (err) {
@@ -726,6 +841,125 @@
     } catch (err) { toast(err.message, true); }
   }
 
+  /* ---------- Team activity (live, server only) ---------- */
+
+  const ACT_EVERY = 10000; // ms between two synchronisations
+  const act = { events: [], keys: new Set(), timer: null, unseen: 0, lastSync: null, ok: true, busy: false, sig: '' };
+
+  function initActivity() {
+    $('#btnActivity').hidden = false;
+    $('#liveDot').hidden = false;
+    $('#btnActivity').addEventListener('click', () => {
+      const box = $('#dbActivity');
+      box.hidden = !box.hidden;
+      $('#btnActivity').setAttribute('aria-expanded', box.hidden ? 'false' : 'true');
+      if (!box.hidden) { act.unseen = 0; renderActivity(); }
+    });
+    $('#actOthers').addEventListener('change', renderActivity);
+    $('#actKind').addEventListener('change', renderActivity);
+    act.sig = remoteSig();
+    pollActivity(true);
+    act.timer = setInterval(() => pollActivity(false), ACT_EVERY);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) pollActivity(false); });
+  }
+
+  /** What the shared manual reviews look like now (to notice changes made by other users). */
+  function remoteSig() {
+    const part = (m) => Array.from(m.entries()).map(([k, v]) => `${k}=${v.category || v.group}|${v.user || ''}|${v.comment || ''}|${v.at || ''}`).sort().join(';');
+    return `${part(state.cls)}#${part(state.res)}`;
+  }
+
+  async function pollActivity(first) {
+    if (!state.server || act.busy || (document.hidden && !first)) return;
+    act.busy = true;
+    try {
+      // ask again for the last minute too (an event written while we were reading is never missed); duplicates are skipped
+      const since = act.events.length ? new Date(Date.parse(act.events[0].at) - 60000).toISOString() : '';
+      const j = await api.get(`api/activity?limit=${first ? 150 : 300}${since ? `&since=${encodeURIComponent(since)}` : ''}`);
+      const fresh = j.events.filter((e) => !act.keys.has(e.key));
+      for (const e of fresh) act.keys.add(e.key);
+      if (fresh.length) act.events = [...fresh, ...act.events].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0)).slice(0, 400);
+      act.ok = true;
+      act.lastSync = new Date();
+      if (!first && fresh.length) await applyRemote(fresh);
+      renderActivity();
+    } catch (err) {
+      act.ok = false;
+      renderLive();
+    } finally {
+      act.busy = false;
+    }
+  }
+
+  /** Changes made by other users: reload the shared reviews and recompute; announce new imports. */
+  async function applyRemote(fresh) {
+    const me = userName().toLowerCase();
+    const others = fresh.filter((e) => (e.user || '').toLowerCase() !== me || !me);
+    if ($('#dbActivity').hidden) act.unseen += others.length;
+    if (fresh.some((e) => e.kind !== 'import')) {
+      refreshServerStats();
+      await loadServerClassifications();
+      await loadServerResolvers();
+      const sig = remoteSig();
+      if (sig !== act.sig) {
+        act.sig = sig;
+        if (state.tickets.length) { applyCls(); recompute(); }
+      }
+    }
+    const reviews = others.filter((e) => e.kind !== 'import');
+    if (reviews.length) {
+      toast(reviews.length === 1 ? `${reviews[0].user}: ${activityText(reviews[0])} — figures updated.`
+        : `${reviews.length} change(s) by ${Array.from(new Set(reviews.map((e) => e.user))).join(', ')} — figures updated.`);
+    }
+    const imports = others.filter((e) => e.kind === 'import');
+    if (imports.length) {
+      refreshServerStats();
+      const e = imports[0];
+      const box = $('#dbRemote');
+      box.hidden = false;
+      box.replaceChildren(el('span', { text: `${e.user || 'Someone'} imported “${e.value}” at ${fmtIso(e.at)} (${e.detail}).` }),
+        el('button', { type: 'button', class: 'btn small primary', text: 'Show the updated database', onclick: () => { box.hidden = true; loadDatabase(); } }),
+        el('button', { type: 'button', class: 'btn small', text: 'Later', onclick: () => { box.hidden = true; } }));
+    }
+  }
+
+  function activityText(e) {
+    const cat = (c) => (c === 'INC' ? 'Incidencia' : 'OT');
+    if (e.kind === 'import') return `imported “${e.value}” — ${e.detail}`;
+    if (e.kind === 'classification') return e.action === 'remove' ? `removed the manual Incidencia / OT review of ${e.ticket}` : `classified ${e.ticket} as ${cat(e.value)}`;
+    if (e.action === 'remove') return `put “Resolved by” of ${e.ticket} back to the Excel value`;
+    return `set “Resolved by” of ${e.ticket} to ${groupTxt(e.value)}${e.engineer ? ` (${e.engineer})` : ''}`;
+  }
+
+  function renderLive() {
+    const dot = $('#liveDot');
+    dot.classList.toggle('off', !act.ok);
+    dot.textContent = act.ok ? `● Live${act.lastSync ? ` · synced ${act.lastSync.toLocaleTimeString('es-ES')}` : ''}` : '○ Server not reachable — retrying';
+    dot.title = act.ok ? `The team activity and the manual reviews of other users are synchronised every ${ACT_EVERY / 1000} seconds.` : 'The last synchronisation failed; it is retried automatically.';
+    const b = $('#actBadge');
+    b.hidden = !act.unseen;
+    b.textContent = act.unseen;
+  }
+
+  function renderActivity() {
+    renderLive();
+    const box = $('#dbActivity');
+    if (box.hidden) return;
+    const me = userName().toLowerCase();
+    const kind = $('#actKind').value;
+    const list = act.events.filter((e) => (!kind || e.kind === kind) && (!$('#actOthers').checked || (e.user || '').toLowerCase() !== me));
+    $('#actInfo').textContent = `${list.length} event(s) · newest first · updated every ${ACT_EVERY / 1000} s`;
+    $('#actList').replaceChildren(...(list.length ? list.slice(0, 200).map((e) => {
+      const txt = activityText(e);
+      const parts = e.ticket ? txt.split(e.ticket) : [txt];
+      return el('li', { class: `act-${e.kind}${(e.user || '').toLowerCase() === me && me ? ' mine' : ''}` },
+        el('span', { class: 'act-time', text: fmtIso(e.at) }),
+        el('span', { class: 'act-user', text: e.user || '—' }),
+        el('span', { class: 'act-text' }, ...parts.flatMap((p, i) => (i ? [findTicket(e.ticket) ? tidButton(e.ticket) : e.ticket, p] : [p]))),
+        e.kind === 'resolver' && e.detail ? el('span', { class: 'act-note', text: `“${e.detail}”` }) : null);
+    }) : [el('li', { class: 'muted', text: 'No activity yet.' })]));
+  }
+
   /* ---------- Manual classification (review of "Sin gestor identificado") ---------- */
 
   function loadLocalClassifications() {
@@ -744,8 +978,141 @@
   }
 
   function applyCls() {
-    if (state.tickets) C.applyClassifications(state.tickets, state.cls);
-    if (state.allTickets) C.applyClassifications(state.allTickets, state.cls);
+    for (const list of [state.tickets, state.allTickets]) {
+      if (!list) continue;
+      C.applyClassifications(list, state.cls);
+      C.applyResolvers(list, state.res);
+    }
+  }
+
+  /* ---------- Manual “Resolved by” ---------- */
+
+  function loadLocalResolvers() {
+    state.res = new Map();
+    try {
+      const raw = JSON.parse(localStorage.getItem('slm-resolvers') || '{}');
+      for (const [id, o] of Object.entries(raw)) if (o && o.group && o.comment) state.res.set(id, o);
+    } catch (e) { /* ignore */ }
+  }
+
+  async function loadServerResolvers() {
+    try {
+      const { resolvers } = await api.get('api/resolvers');
+      state.res = new Map(resolvers.map((o) => [o.ticket_id, { group: o.group_id, user: o.resolver_user, comment: o.comment, by: o.user_name, at: o.at }]));
+    } catch (err) { toast(`Could not load the “Resolved by” changes: ${err.message}`, true); }
+  }
+
+  /**
+   * Change (or with data = null, remove) the “Resolved by” of one or more tickets.
+   * @param {{group:string, user?:string, comment:string}|null} data
+   */
+  async function setResolver(ids, data) {
+    if (!userName()) { toast('Enter your name (“Your name”, under the upload box) before changing “Resolved by”.', true); $('#userName').focus(); return false; }
+    if (data && String(data.comment || '').trim().length < 5) { toast('Please explain the reason for the change (at least 5 characters).', true); return false; }
+    const list = Array.isArray(ids) ? ids : [ids];
+    let saved = 0;
+    try {
+      for (const id of list) {
+        if (state.server) {
+          if (data) {
+            const o = await api.send('PUT', `api/resolvers/${encodeURIComponent(id)}`, { group: data.group, resolverUser: data.user || '', comment: data.comment, user: userName() });
+            state.res.set(id, { group: o.group_id, user: o.resolver_user, comment: o.comment, by: o.user_name, at: o.at });
+          } else {
+            await api.send('DELETE', `api/resolvers/${encodeURIComponent(id)}?user=${encodeURIComponent(userName())}`);
+            state.res.delete(id);
+          }
+        } else if (data) {
+          state.res.set(id, { group: data.group, user: data.user || '', comment: data.comment.trim(), by: userName(), at: new Date().toISOString() });
+        } else {
+          state.res.delete(id);
+        }
+        saved++;
+      }
+      if (!state.server) {
+        try { localStorage.setItem('slm-resolvers', JSON.stringify(Object.fromEntries(state.res))); } catch (e) { /* ignore */ }
+      }
+    } catch (err) {
+      toast(`“Resolved by” not saved${saved ? ` after ${saved} ticket(s)` : ''}: ${err.message}`, true);
+    }
+    applyCls();
+    recompute();
+    act.sig = remoteSig();
+    if (state.server) { refreshServerStats(); pollActivity(false); }
+    return saved === list.length;
+  }
+
+  function groupTxt(g) {
+    return g === C.RESOLVER_OTHER ? 'another group' : g;
+  }
+
+  /** “Resolved by” cell: the group (and engineer), the manual change if any, and a button to change it. */
+  function resolverCell(t, after) {
+    const o = t.resolverOverride;
+    const shown = t.restorationGroupId ? `${t.restorationGroupId}${t.restorationUser ? ' · ' + t.restorationUser : ''}` : (t.open ? '— (still open)' : '— (none in the Excel)');
+    return el('span', { class: 'review resolver' },
+      el('span', { class: o ? 'done' : null, text: o ? `✔ ${o.group === C.RESOLVER_OTHER ? `${t.restorationGroupIdAuto || '—'} (checked)` : shown}` : shown }),
+      o ? el('span', { class: 'by', title: o.comment, text: `${o.group === C.RESOLVER_OTHER ? 'confirmed another group' : `was ${t.restorationGroupIdAuto || '—'}`} · “${o.comment.length > 60 ? o.comment.slice(0, 60) + '…' : o.comment}” · ${o.by}${o.at ? ' · ' + fmtIso(o.at) : ''}` }) : null,
+      el('button', { type: 'button', class: 'btn small', text: o ? 'Edit' : 'Change…', title: 'Change who resolved this ticket (a comment is required)',
+        onclick: () => openResolverDialog([t], after) }));
+  }
+
+  const rdState = { tickets: [], after: null };
+
+  function openResolverDialog(tickets, after) {
+    rdState.tickets = tickets;
+    rdState.after = after || null;
+    const groups = slmGroups().map((g) => g.toUpperCase());
+    const one = tickets.length === 1 ? tickets[0] : null;
+    const o = one && one.resolverOverride;
+    $('#rdTitle').textContent = one ? `Resolved by — ${one.id}` : `Resolved by — ${tickets.length} tickets`;
+    $('#rdInfo').replaceChildren(one
+      ? el('div', null,
+        el('div', null, el('b', { text: 'In the Excel: ' }), one.restorationGroupIdAuto ? `${one.restorationGroupIdAuto}${one.restorationGroupNameAuto ? ` (${one.restorationGroupNameAuto})` : ''}${one.restorationUserAuto ? ' · ' + one.restorationUserAuto : ''}` : '(no restoration group)'),
+        el('div', { class: 'muted small', text: `${one.type} · ${one.status} · created ${C.fmtDateTime(one.created)} · ${one.action || '(no current action)'}` }))
+      : el('div', { text: `The same change and comment will be recorded for each of the ${tickets.length} tickets.` }));
+    const sel = $('#rdGroup');
+    sel.replaceChildren(...groups.map((g) => el('option', { value: g, text: `${g} — resolved by the Sortis team (counted)` })),
+      el('option', { value: C.RESOLVER_OTHER, text: 'Another group really resolved it (checked — not counted)' }));
+    sel.value = o ? o.group : (groups.includes('XSP00027') && one && one.category === 'OT' ? 'XSP00027' : groups[0] || C.RESOLVER_OTHER);
+    // engineers already seen in the Sortis queues
+    const users = Array.from(new Set((state.allTickets || []).filter((t) => groups.includes((t.restorationGroupIdAuto || '').toUpperCase()) && t.restorationUserAuto)
+      .map((t) => t.restorationUserAuto))).sort((a, b) => a.localeCompare(b, 'es'));
+    $('#rdUsers').replaceChildren(...users.map((u) => el('option', { value: u })));
+    $('#rdUser').value = o ? o.user || '' : '';
+    $('#rdComment').value = o ? o.comment : '';
+    $('#rdRemove').hidden = !tickets.some((t) => t.resolverOverride);
+    $('#rdWho').textContent = userName() ? `Recorded as ${userName()}, ${new Date().toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' })}.` : '⚠ Enter your name under the upload box first — it is recorded with the change.';
+    syncResolverDialog();
+    const dlg = $('#resolverDialog');
+    if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); } else dlg.setAttribute('open', '');
+    setTimeout(() => $('#rdComment').focus(), 0);
+  }
+
+  function syncResolverDialog() {
+    $('#rdUserRow').hidden = $('#rdGroup').value === C.RESOLVER_OTHER;
+  }
+
+  function initResolverDialog() {
+    const dlg = $('#resolverDialog');
+    $('#rdGroup').addEventListener('change', syncResolverDialog);
+    $('#rdCancel').addEventListener('click', () => dlg.close());
+    $('#rdClose').addEventListener('click', () => dlg.close());
+    $('#rdRemove').addEventListener('click', async () => {
+      const ids = rdState.tickets.filter((t) => t.resolverOverride).map((t) => t.id);
+      if (!window.confirm(`Remove the manual “Resolved by” of ${ids.length} ticket(s)? They go back to the value of the Excel.`)) return;
+      if (await setResolver(ids, null)) { dlg.close(); toast('Back to the value of the Excel.'); if (rdState.after) rdState.after(); }
+    });
+    $('#rdSave').addEventListener('click', async () => {
+      const comment = $('#rdComment').value.trim();
+      if (comment.length < 5) { toast('Please explain the reason for the change (at least 5 characters).', true); $('#rdComment').focus(); return; }
+      const group = $('#rdGroup').value;
+      const ok = await setResolver(rdState.tickets.map((t) => t.id), { group, user: group === C.RESOLVER_OTHER ? '' : $('#rdUser').value.trim(), comment });
+      if (ok) {
+        dlg.close();
+        toast(group === C.RESOLVER_OTHER ? 'Recorded: resolved by another group (not counted).' : `Recorded: resolved by ${group} — now counted.`);
+        if (rdState.after) rdState.after();
+      }
+    });
   }
 
   async function classify(ids, category) {
@@ -774,7 +1141,8 @@
     }
     applyCls();
     recompute();
-    if (state.server) refreshServerStats();
+    act.sig = remoteSig();
+    if (state.server) { refreshServerStats(); pollActivity(false); }
     return true;
   }
 
@@ -792,6 +1160,167 @@
       el('button', { type: 'button', class: 'btn small', text: 'OT', title: 'Count this case as an OT', onclick: done('OT') }));
   }
 
+  /* ---------- Manual review tab ---------- */
+
+  const rvState = { scope: 'weeks', reason: '', status: 'pending', q: '', page: 0 };
+  const RV_PAGE = 50;
+
+  /** Start / end (exclusive) of the review scope, or null for every date. */
+  function reviewWindow() {
+    const r = state.report;
+    if (!r || rvState.scope === 'all') return null;
+    if (rvState.scope === 'week') return [r.reportWeek.start, r.cutoff];
+    if (rvState.scope === 'month') {
+      const m = r.reportMonth;
+      const y = Math.floor(m / 100), mo = m % 100;
+      return [Date.UTC(y, mo - 1, 1), Math.min(Date.UTC(mo === 12 ? y + 1 : y, mo === 12 ? 0 : mo, 1), r.cutoff)];
+    }
+    return [r.weeks[0].start, r.cutoff];
+  }
+
+  /** Every ticket of the scope that needs (or had) a manual review, with its reasons. */
+  function reviewItems(win) {
+    const groups = new Set(slmGroups().map((g) => g.toUpperCase()));
+    const out = [];
+    for (const t of state.tickets) {
+      if (win && (t.created < win[0] || t.created >= win[1])) continue;
+      const reasons = C.reviewReasons(t, groups);
+      if (reasons.length) out.push({ t, reasons, pending: reasons.some((x) => !x.done) });
+    }
+    return out.sort((a, b) => (b.pending - a.pending) || b.t.created - a.t.created);
+  }
+
+  function scopeText() {
+    const r = state.report;
+    if (!r) return '';
+    if (rvState.scope === 'all') return 'all dates';
+    if (rvState.scope === 'week') return `semana ${r.reportWeek.week}`;
+    if (rvState.scope === 'month') return C.monthLabel(r.reportMonth).toLowerCase();
+    return `semanas ${r.weeks[0].week}–${r.reportWeek.week}`;
+  }
+
+  function renderReview() {
+    const box = $('#rvBody');
+    if (!box || !state.report) return;
+    const items = reviewItems(reviewWindow());
+    const counts = new Map();
+    for (const it of items) for (const x of it.reasons) counts.set(x.code, (counts.get(x.code) || 0) + 1);
+    if (rvState.reason && !counts.has(rvState.reason)) rvState.reason = '';
+    const q = rvState.q.trim().toLowerCase();
+    const list = items.filter((it) => (!rvState.reason || it.reasons.some((x) => x.code === rvState.reason)) &&
+      (rvState.status === 'all' || (rvState.status === 'pending' ? it.pending : !it.pending)) &&
+      (!q || `${it.t.id} ${it.t.action} ${it.t.description} ${it.t.restorationGroupIdAuto} ${it.t.restorationUserAuto} ${it.t.groupName}`.toLowerCase().includes(q)));
+    const pendingAll = items.filter((it) => it.pending).length;
+    const tab = $('[data-tab="review"]');
+    tab.replaceChildren(...['Manual review', pendingAll ? el('span', { class: 'tab-count', text: pendingAll, title: `${pendingAll} pending in ${scopeText()}` }) : null].filter(Boolean));
+
+    const chip = (active, label, n, onclick, title) => el('button', { type: 'button', class: `chip${active ? ' active' : ''}`, title, onclick }, label, el('b', { text: n }));
+    const rerender = () => renderReview();
+    const reasonChips = el('div', { class: 'chips', role: 'group', 'aria-label': 'Filter by reason' },
+      chip(!rvState.reason, 'All reasons', items.length, () => { rvState.reason = ''; rvState.page = 0; rerender(); }),
+      Object.entries(C.REVIEW_REASONS).filter(([code]) => counts.has(code)).map(([code, label]) => chip(rvState.reason === code, label, counts.get(code),
+        () => { rvState.reason = code; rvState.page = 0; rerender(); })));
+    const statusChips = el('div', { class: 'chips', role: 'group', 'aria-label': 'Filter by review status' },
+      [['pending', 'Pending review', pendingAll], ['done', 'Reviewed', items.length - pendingAll], ['all', 'All', items.length]].map(([v, label, n]) =>
+        chip(rvState.status === v, label, n, () => { rvState.status = v; rvState.page = 0; rerender(); })));
+
+    const pages = Math.max(1, Math.ceil(list.length / RV_PAGE));
+    if (rvState.page >= pages) rvState.page = pages - 1;
+    const shown = list.slice(rvState.page * RV_PAGE, rvState.page * RV_PAGE + RV_PAGE);
+    const head = ['Ticket ID', 'Why it needs a review', 'Counted as (Incidencia / OT)', 'Resolved by', 'In the report', 'Creation date', 'Ticket type · status', 'Source file', 'Current action'];
+    const reasonList = (it) => el('ul', { class: 'rv-reasons' }, it.reasons.map((x) => el('li', { class: x.done ? 'done' : 'todo', title: x.detail },
+      el('b', { text: `${x.done ? '✔' : '•'} ${x.label}` }), el('span', { class: 'muted small', text: ` — ${x.detail}` }))));
+    const table = el('table', { class: 'data-table rv-table' },
+      el('thead', null, el('tr', null, head.map((h) => el('th', { text: h, style: 'cursor:default' })))),
+      el('tbody', null, shown.length ? shown.map((it) => {
+        const t = it.t;
+        const needsCls = it.reasons.some((x) => x.code !== 'OTHER_RESOLVER');
+        const needsRes = it.reasons.some((x) => x.code === 'OTHER_RESOLVER') || t.resolverOverride;
+        return el('tr', { class: it.pending ? 'pending' : 'reviewed' },
+          el('td', null, tidButton(t.id)),
+          el('td', null, reasonList(it)),
+          el('td', null, el('div', { class: 'muted small', text: `${t.category === 'INC' ? 'Incidencia' : 'OT'}${t.classification ? ' (manual)' : ' (by the rules)'}` }),
+            needsCls || t.classification ? reviewCell(t) : null),
+          el('td', null, needsRes ? resolverCell(t) : el('span', { class: 'muted small', text: t.restorationGroupId || (t.open ? 'still open' : '—') })),
+          el('td', { text: t.counted === false ? 'No — resolved by another group' : 'Yes', class: t.counted === false ? 'not-counted' : null }),
+          el('td', { text: C.fmtDateTime(t.created) }),
+          el('td', { text: `${t.type} · ${t.status}` }),
+          el('td', { class: 'wrap', text: (t.sourceRoles || []).map((r) => ROLE_TXT[r]).join(' + ') || '—', title: (t.sourceFiles || []).join(' / ') }),
+          t.action ? el('td', { class: 'wrap', text: t.action }) : el('td', null, el('span', { class: 'empty-val', text: '(empty)' })));
+      }) : el('tr', null, el('td', { colspan: head.length, class: 'muted', text: items.length ? 'Nothing matches the filters.' : `✔ Nothing to review in ${scopeText()}.` }))));
+
+    const pendingShown = list.filter((it) => it.pending);
+    const clsIds = pendingShown.filter((it) => it.reasons.some((x) => x.code !== 'OTHER_RESOLVER' && !x.done)).map((it) => it.t.id);
+    const resTickets = pendingShown.filter((it) => it.reasons.some((x) => x.code === 'OTHER_RESOLVER' && !x.done)).map((it) => it.t);
+    const bulk = el('div', { class: 'toolbar wrap rv-bulk' },
+      clsIds.length ? el('span', { class: 'review' }, el('span', { class: 'muted small', text: `Classify the ${clsIds.length} pending ticket(s) of the list as:` }),
+        ...[['INC', 'Incidencia'], ['OT', 'OT']].map(([cat, label]) => el('button', { type: 'button', class: 'btn small', text: label, onclick: async () => {
+          if (clsIds.length > 500) { toast('Narrow the list (filters or search) to 500 tickets or fewer.', true); return; }
+          if (!window.confirm(`Classify ${clsIds.length} ticket(s) as ${label}? Each one is recorded with your name and the date.`)) return;
+          await classify(clsIds, cat);
+        } }))) : null,
+      resTickets.length ? el('button', { type: 'button', class: 'btn small', text: `Set “Resolved by” for the ${resTickets.length} pending ticket(s)…`, onclick: () => {
+        if (resTickets.length > 300) { toast('Narrow the list (filters or search) to 300 tickets or fewer.', true); return; }
+        openResolverDialog(resTickets);
+      } }) : null);
+
+    const search = el('input', { type: 'search', placeholder: 'Search ticket ID, action, description, group…', value: rvState.q, 'aria-label': 'Search the review list' });
+    let timer;
+    search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { rvState.q = search.value; rvState.page = 0; renderReview(); const s2 = $('#rvBody input[type=search]'); if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); } }, 250); });
+    const scopeSel = el('select', { 'aria-label': 'Period to review' },
+      el('option', { value: 'week', text: `Report week (semana ${state.report.reportWeek.week})` }),
+      el('option', { value: 'weeks', text: `Weeks shown in the tables (${state.report.weeks[0].week}–${state.report.reportWeek.week})` }),
+      el('option', { value: 'month', text: `Report month (${C.monthLabel(state.report.reportMonth)})` }),
+      el('option', { value: 'all', text: 'All dates' }));
+    scopeSel.value = rvState.scope;
+    scopeSel.addEventListener('change', () => { rvState.scope = scopeSel.value; rvState.page = 0; renderReview(); });
+
+    const win = reviewWindow();
+    const excluded = state.tickets.filter((t) => t.counted === false && (!win || (t.created >= win[0] && t.created < win[1]))).length;
+    const summary = el('p', { class: pendingAll ? 'rv-summary warn' : 'rv-summary ok', text: pendingAll
+      ? `${pendingAll} ticket(s) of ${scopeText()} still need a review. Until then they are counted by the rules${countRule() ? '; tickets resolved by another group are not counted' : ''}.`
+      : `✔ Every ticket of ${scopeText()} that needed a review has been reviewed.` });
+    box.replaceChildren(
+      el('div', { class: 'toolbar wrap' }, el('label', { class: 'inline-label', text: 'Period' }), scopeSel, search,
+        el('button', { type: 'button', class: 'btn small', text: `Export ${list.length} to Excel`, onclick: () => exportReview(list) })),
+      summary,
+      countRule() ? el('p', { class: 'muted small', text: `Counting rule on: only tickets resolved by ${countRule().join(' / ')} — or still open / returned — are counted. ${excluded} ticket(s) of ${scopeText()} are not counted now.` })
+        : el('p', { class: 'muted small', text: 'Counting rule off: every ticket is counted, whoever resolved it (switch it on in step 2).' }),
+      reasonChips, statusChips, bulk,
+      el('div', { class: 'table-wrap data-wrap' }, table),
+      el('div', { class: 'pager' },
+        el('button', { type: 'button', class: 'btn small', text: '‹ Prev', disabled: rvState.page === 0, onclick: () => { rvState.page--; renderReview(); } }),
+        el('span', { class: 'muted small', text: list.length ? `${rvState.page * RV_PAGE + 1}–${Math.min(list.length, (rvState.page + 1) * RV_PAGE)} of ${list.length} · page ${rvState.page + 1} of ${pages}` : '' }),
+        el('button', { type: 'button', class: 'btn small', text: 'Next ›', disabled: rvState.page >= pages - 1, onclick: () => { rvState.page++; renderReview(); } })));
+  }
+
+  function exportReview(list) {
+    try {
+      const aoa = [['Ticket ID', 'Creation date', 'Source file(s)', 'Ticket type', 'Status', 'Current action', 'Reasons', 'Pending', 'Counted as', 'By the rules',
+        'Classified by', 'Classified at', 'Restoration group ID (Excel)', 'Restoration user name (Excel)', 'Resolved by (now)', 'Resolved by — engineer',
+        'Resolved by — comment', 'Changed by', 'Changed at', 'In the report', 'Description']];
+      for (const { t, reasons, pending } of list) {
+        const c = t.classification, o = t.resolverOverride;
+        aoa.push([t.id, C.toExcelSerial(t.created), (t.sourceFiles || []).join(' / '), t.type, t.status, t.action,
+          reasons.map((x) => `${x.done ? '[done] ' : ''}${x.label}: ${x.detail}`).join(' | '), pending ? 'Yes' : 'No',
+          t.category === 'INC' ? 'Incidencia' : 'OT', t.categoryAuto === 'INC' ? 'Incidencia' : 'OT', c ? c.user : '', c ? fmtIso(c.at) : '',
+          t.restorationGroupIdAuto || '', t.restorationUserAuto || '', o ? groupTxt(o.group) : (t.restorationGroupId || ''), o ? o.user : '',
+          o ? o.comment : '', o ? o.by : '', o ? fmtIso(o.at) : '', t.counted === false ? 'No' : 'Yes', (t.description || '').slice(0, 32000)]);
+      }
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      for (let r = 1; r < aoa.length; r++) { const ref = XLSX.utils.encode_cell({ r, c: 1 }); if (ws[ref]) ws[ref].z = 'yyyy-mm-dd hh:mm'; }
+      ws['!cols'] = aoa[0].map((h) => ({ wch: Math.min(45, Math.max(12, h.length + 2)) }));
+      ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: aoa[0].length - 1 } }) };
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Manual review');
+      XLSX.writeFile(wb, `manual-review-${safeFilePart(scopeText())}.xlsx`, { compression: true });
+      toast(`Excel downloaded (${list.length} tickets).`);
+    } catch (err) {
+      console.error(err);
+      toast(`Could not create the Excel file: ${err && err.message ? err.message : err}`, true);
+    }
+  }
+
   /* ---------- Source sheets tab ---------- */
 
   const srcState = { sheet: '', q: '', page: 0 };
@@ -800,14 +1329,17 @@
     if (!state.sheets.length) return;
     const a = state.analysis || (state.analysis = C.analyzeSheets(state.sheets, { date1904: state.date1904 }));
     const nl = state.source.kind === 'db' ? state.source.notInLatest : null;
-    $('#srcLabel').textContent = `(${state.source.kind === 'db' ? 'team database' : 'uploaded file'}: ${state.fileName})`;
+    $('#srcLabel').textContent = `(${state.source.kind === 'db' ? 'team database' : (state.files.length > 1 ? 'uploaded files' : 'uploaded file')}: ${state.fileName})`;
     const fmtList = (pairs, n = 4) => pairs.slice(0, n).map(([k, v]) => `${k}: ${v.toLocaleString('en')}`).join(' · ') + (pairs.length > n ? ` · +${pairs.length - n} more` : '');
-    const head = ['Sheet', 'Ticket table', 'Rows', 'Unique tickets', 'Repeated rows', 'Created from – to', 'Incidencias', 'OTs (by technician action)', 'Ticket types', 'Statuses', 'Only in this sheet', 'Missing columns'];
+    const fileOf = new Map(state.sheets.map((x) => [x.name, x]));
+    const multi = new Set(state.sheets.map((x) => x.file).filter(Boolean)).size > 1 || state.sheets.some((x) => x.role);
+    const head = ['Sheet', ...(multi ? ['File'] : []), 'Ticket table', 'Rows', 'Unique tickets', 'Repeated rows', 'Created from – to', 'Incidencias', 'OTs (by technician action)', 'Ticket types', 'Statuses', 'Only in this sheet', 'Missing columns'];
     if (nl) head.push('Not in the last imported file');
     $('#srcSummary').replaceChildren(el('table', { class: 'rep compact' },
       el('thead', null, el('tr', { class: 'weeks' }, head.map((h) => el('th', { text: h })))),
       el('tbody', null, a.sheets.map((s) => el('tr', null, s.isTicketSheet ? [
         el('td', { text: s.name, style: 'font-weight:600' }),
+        multi ? el('td', { class: 'wrap', text: fileRoleTxt(fileOf.get(s.name)) }) : null,
         el('td', { text: s.ok ? `✔ header on row ${s.headerRow}` : '⚠ incomplete' }),
         el('td', { text: s.rows.toLocaleString('en') }),
         el('td', { text: s.uniqueTickets.toLocaleString('en') }),
@@ -822,7 +1354,8 @@
         nl ? el('td', { text: (nl.get(s.name) ? nl.get(s.name).size : 0).toLocaleString('en') }) : null,
       ] : [
         el('td', { text: s.name, style: 'font-weight:600' }),
-        el('td', { class: 'wrap', colspan: head.length - 1, text: `Summary / other sheet (no Ticket ID table, ${s.nonEmptyRows} non-empty rows) — not used for the calculations.` }),
+        multi ? el('td', { class: 'wrap', text: fileRoleTxt(fileOf.get(s.name)) }) : null,
+        el('td', { class: 'wrap', colspan: head.length - (multi ? 2 : 1), text: `Summary / other sheet (no Ticket ID table, ${s.nonEmptyRows} non-empty rows) — not used for the calculations.` }),
       ])))));
 
     // consistency notes
@@ -865,6 +1398,11 @@
     renderSourceRows();
   }
 
+  function fileRoleTxt(sh) {
+    if (!sh) return '';
+    return [sh.role ? ROLE_TXT[sh.role] : '', sh.file && !/^Team database/.test(sh.file) ? sh.file : ''].filter(Boolean).join(' · ');
+  }
+
   function sourceGrid() {
     const sh = state.sheets.find((s) => s.name === srcState.sheet);
     if (!sh) return { head: [], rows: [], idCol: -1 };
@@ -872,23 +1410,23 @@
     if (h) {
       const head = (sh.rows[h.index] || []).map((x) => (x === null || x === undefined ? '' : String(x)));
       const rows = sh.rows.slice(h.index + 1).filter((r) => Array.isArray(r) && r.some((v) => v !== null && v !== ''));
-      return { head, rows, idCol: h.map.ticketId, dateCols: head.map((x) => /date|fecha/i.test(x)) };
+      return { head, rows, idCol: h.map.ticketId, dateCols: head.map((x) => /date|fecha/i.test(x)), date1904: !!sh.date1904 };
     }
     const width = sh.rows.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0);
     const head = Array.from({ length: width }, (_, i) => XLSX.utils.encode_col(i));
-    return { head, rows: sh.rows.filter((r) => Array.isArray(r) && r.some((v) => v !== null && v !== '')), idCol: -1, dateCols: [] };
+    return { head, rows: sh.rows.filter((r) => Array.isArray(r) && r.some((v) => v !== null && v !== '')), idCol: -1, dateCols: [], date1904: !!sh.date1904 };
   }
 
-  function cellText(v, isDate) {
+  function cellText(v, isDate, date1904) {
     if (v === null || v === undefined) return '';
-    if (isDate && typeof v === 'number') { const ms = C.parseDate(v, state.date1904); return ms === null ? String(v) : C.fmtDateTime(ms); }
+    if (isDate && typeof v === 'number') { const ms = C.parseDate(v, date1904 === undefined ? state.date1904 : date1904); return ms === null ? String(v) : C.fmtDateTime(ms); }
     return String(v);
   }
 
   function renderSourceRows() {
     const g = sourceGrid();
     const q = srcState.q.trim().toLowerCase();
-    const list = q ? g.rows.filter((r) => r.some((v, i) => cellText(v, g.dateCols[i]).toLowerCase().includes(q))) : g.rows;
+    const list = q ? g.rows.filter((r) => r.some((v, i) => cellText(v, g.dateCols[i], g.date1904).toLowerCase().includes(q))) : g.rows;
     const SIZE = 50;
     const pages = Math.max(1, Math.ceil(list.length / SIZE));
     if (srcState.page >= pages) srcState.page = pages - 1;
@@ -899,7 +1437,7 @@
         el('td', { class: 'muted', text: srcState.page * SIZE + k + 1 }),
         g.head.map((_, i) => {
           if (i === g.idCol && r[i]) return el('td', null, tidButton(String(r[i]).trim()));
-          const t = cellText(r[i], g.dateCols[i]);
+          const t = cellText(r[i], g.dateCols[i], g.date1904);
           return el('td', { text: t, title: t.length > 40 ? t.slice(0, 1500) : null });
         })))
         : el('tr', null, el('td', { colspan: g.head.length + 1, class: 'muted', text: 'No rows match.' })))));
@@ -920,7 +1458,7 @@
         const g = sourceGrid();
         const aoa = [g.head, ...g.rows.map((r) => g.head.map((_, i) => {
           const v = r[i];
-          if (g.dateCols[i] && typeof v === 'number') { const ms = C.parseDate(v, state.date1904); return ms === null ? v : C.toExcelSerial(ms); }
+          if (g.dateCols[i] && typeof v === 'number') { const ms = C.parseDate(v, g.date1904); return ms === null ? v : C.toExcelSerial(ms); }
           return v === undefined ? null : v;
         }))];
         const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -992,11 +1530,18 @@
       ['Third party vendor', t.vendor ? `${t.vendor}${t.escalated ? ' (escalated)' : ''}` : ''],
       ['Time from creation to restoration', hrs === null ? '' : hoursTxt(hrs)],
       ['Found in sheet(s)', t.sheets.join(' / ')],
+      ['Source file(s)', (t.sourceFiles || []).join(' / ')],
+      ['Restoration group in the Excel', t.resolverOverride ? `${t.restorationGroupIdAuto || '—'}${t.restorationUserAuto ? ' · ' + t.restorationUserAuto : ''} (changed manually, see above)` : ''],
     ]);
     const raw = grid(t.raw.filter(([k]) => k !== 'Description').map(([k, v]) => [k, v, t.rawAlt[k]]));
-    const reviewBox = el('div', { class: 'td-sec' }, el('h4', { text: 'Manual review (Incidencia / OT)' }),
-      el('div', { class: 'td-review' }, reviewCell(t, () => openTicket(t.id)),
-        el('span', { class: 'muted small', text: t.classification ? '' : `Now counted as ${t.category === 'INC' ? 'Incidencia' : 'OT'} by the rules.` })));
+    const reasons = C.reviewReasons(t, new Set(slmGroups().map((g) => g.toUpperCase())));
+    const reviewBox = el('div', { class: 'td-sec' }, el('h4', { text: 'Manual review' }),
+      reasons.length ? el('ul', { class: 'rv-reasons' }, reasons.map((x) => el('li', { class: x.done ? 'done' : 'todo' },
+        el('b', { text: `${x.done ? '✔' : '•'} ${x.label}` }), el('span', { class: 'muted small', text: ` — ${x.detail}` })))) : null,
+      el('div', { class: 'td-review' }, el('span', { class: 'muted small', text: 'Incidencia / OT:' }), reviewCell(t, () => openTicket(t.id)),
+        el('span', { class: 'muted small', text: t.classification ? '' : `Now counted as ${t.category === 'INC' ? 'Incidencia' : 'OT'} by the rules.` })),
+      el('div', { class: 'td-review' }, el('span', { class: 'muted small', text: 'Resolved by:' }), resolverCell(t, () => openTicket(t.id))),
+      t.counted === false ? el('p', { class: 'small not-counted', text: 'Not counted in the report: resolved by another group (counting rule of step 2). Change “Resolved by” if the Sortis team really resolved it.' }) : null);
     const histBox = state.server ? el('div', { class: 'td-sec' }, el('h4', { text: 'History in the team database' }), el('div', { class: 'muted small', text: 'Loading…' })) : null;
     $('#tdBody').replaceChildren(...[
       flow,
@@ -1011,6 +1556,8 @@
           ...h.rows.map((r) => `${r.sheet}: first imported from “${r.first_file}” (${fmtIso(r.first_at)}); last seen in “${r.last_seen_file}” (${fmtIso(r.last_seen_at)})`),
           ...h.changes.map((c) => `${fmtIso(c.imported_at)} · ${c.file_name}${c.user_name ? ' (' + c.user_name + ')' : ''} · ${c.sheet}: ${c.field} “${c.old_value || '—'}” → “${c.new_value || '—'}”`),
           ...h.classifications.map((c) => `${fmtIso(c.at)} · ${c.user_name}: ${c.action === 'remove' ? 'manual review removed' : 'classified as ' + (c.category === 'INC' ? 'Incidencia' : 'OT')}`),
+          ...(h.resolvers || []).map((c) => `${fmtIso(c.at)} · ${c.user_name}: ${c.action === 'remove' ? '“Resolved by” back to the Excel value'
+            : `“Resolved by” set to ${groupTxt(c.group_id)}${c.resolver_user ? ' (' + c.resolver_user + ')' : ''} — “${c.comment}”`}`),
         ];
         histBox.replaceChildren(el('h4', { text: 'History in the team database' }),
           items.length ? el('ul', { class: 'td-hist' }, items.map((x) => el('li', { text: x }))) : el('div', { class: 'muted small', text: 'Not in the database yet (this file has not been saved).' }));
@@ -1283,6 +1830,16 @@
       el('span', { class: 'pb-sub', text: `Data in file until ${C.fmtDateTime(state.summary.dataUntil)}` }),
     ];
     if (r.partialWeek) parts.push(el('span', { class: 'pb-warn', text: `⚠ The file ends before this week is over — figures are as of ${C.fmtDateTime(r.asOf)}.` }));
+    const inWeeks = (t) => t.created >= r.weeks[0].start && t.created < r.cutoff;
+    if (r.countRule) {
+      const excl = state.tickets.filter((t) => t.counted === false && inWeeks(t)).length;
+      parts.push(el('span', { class: 'pb-sub', text: `Counting only cases resolved by ${r.countRule.join(' / ')} (or still open / returned)${excl ? ` — ${excl} case(s) of these weeks resolved by another group are not counted` : ''}` }));
+    }
+    const pendingRv = reviewItems([r.weeks[0].start, r.cutoff]).filter((it) => it.pending).length;
+    if (pendingRv) {
+      parts.push(el('button', { type: 'button', class: 'pb-warn linkish', text: `⚠ ${pendingRv} ticket(s) of these weeks need a manual review (suspected type, resolved by another group or without gestor) — open Manual review`,
+        onclick: () => { rvState.scope = 'weeks'; rvState.status = 'pending'; rvState.reason = ''; rvState.page = 0; $('[data-tab="review"]').click(); renderReview(); $('[data-tab="review"]').scrollIntoView({ behavior: 'smooth', block: 'start' }); } }));
+    }
     $('#periodBanner').replaceChildren(...parts);
   }
 
@@ -1584,6 +2141,11 @@
     { key: 'categoryByAction', label: 'Counted as OT by Current action', fmt: (v) => (v ? 'Sí' : '') },
     { key: 'categoryAuto', label: 'Classification by the rules', fmt: (v) => (v === 'INC' ? 'Incidencia' : 'OT') },
     { key: 'classification', label: 'Manual review', fmt: (c) => (c ? `${c.category === 'INC' ? 'Incidencia' : 'OT'} — ${c.user}${c.at ? ', ' + fmtIso(c.at) : ''}` : '') },
+    { key: 'sourceFiles', label: 'Source file(s)', fmt: listFmt },
+    { key: 'suspect', label: 'Suspected type', fmt: (v) => (v ? C.SUSPECT_LABELS[v] : '') },
+    { key: 'restorationGroupIdAuto', label: 'Restoration group ID (Excel)' },
+    { key: 'resolverOverride', label: 'Resolved by — manual change', fmt: (o) => (o ? `${groupTxt(o.group)}${o.user ? ' · ' + o.user : ''} — “${o.comment}” — ${o.by}${o.at ? ', ' + fmtIso(o.at) : ''}` : '') },
+    { key: 'counted', label: 'Counted in the report', fmt: (v) => (v === false ? 'No (resolved by another group)' : 'Yes') },
   ];
   const ALL_COLUMNS = [...DATA_COLUMNS, ...DETAIL_COLUMNS];
   const DEFAULT_VISIBLE = DATA_COLUMNS.map((c) => c.key).concat(['restorationGroupId', 'restorationUser', 'closureUser']);
@@ -1867,7 +2429,18 @@
       if (includePeriod) meta.period = { data: state.period, note: periodNote(state.period), gestorCaption: gestorCaption(state.period) };
       if (includeTeam) meta.team = { data: state.team, note: teamNote(state.team) };
       meta.include = sections;
-      meta.manualReviewed = state.tickets.filter((t) => t.classification && t.created >= r.weeks[0].start && t.created < r.cutoff).length;
+      const inWeeks = (t) => t.created >= r.weeks[0].start && t.created < r.cutoff;
+      const counted = state.counted || state.tickets;
+      meta.manualReviewed = counted.filter((t) => t.classification && inWeeks(t)).length;
+      meta.twoFiles = !!state.combined;
+      meta.resolverChanged = counted.filter((t) => t.resolverOverride && t.resolverOverride.group !== C.RESOLVER_OTHER && inWeeks(t)).length;
+      meta.adjustments = state.tickets.filter((t) => inWeeks(t) && (t.classification || t.resolverOverride)).sort((a, b) => a.created - b.created).map((t) => {
+        const c = t.classification, o = t.resolverOverride;
+        const change = [c ? `Contado como ${c.category === 'INC' ? 'incidencia' : 'OT'} (reglas: ${t.categoryAuto === 'INC' ? 'incidencia' : 'OT'})` : '',
+          o ? (o.group === C.RESOLVER_OTHER ? `Resuelto por otro grupo (${t.restorationGroupIdAuto || '—'}) — no se cuenta` : `Resuelto por ${o.group}${o.user ? ' (' + o.user + ')' : ''} (en Oceane: ${t.restorationGroupIdAuto || 'sin grupo'})`) : ''].filter(Boolean).join('; ');
+        const by = [c ? `${c.user}, ${c.at ? C.fmtDate(Date.parse(c.at)) : ''}` : '', o ? `${o.by}, ${o.at ? C.fmtDate(Date.parse(o.at)) : ''}` : ''].filter(Boolean);
+        return { id: t.id, created: C.fmtDate(t.created), change, reason: o ? o.comment : (c && c.note) || '—', by: Array.from(new Set(by)).join(' / ') };
+      });
       const doc = SLMDocx.buildDocument(window.docx, C, r, meta, { logo, charts, periodCharts, periodTables, teamCharts, teamTables });
       const blob = await docx.Packer.toBlob(doc);
       const name = `INFORME-SLM-OSS-Sortis-${r.reportWeek.year}-Semana${String(r.reportWeek.week).padStart(2, '0')}-${safeFilePart(r.periodLabel.replace(/ \/ /g, '-'))}.docx`;
@@ -1990,10 +2563,11 @@
     const r = state.report;
     const sel = $('#sheetSelect');
     const rows = [
-      ['Source file', state.fileName],
+      ['Source file(s)', state.fileName],
       ['Sheet used for the report', sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : ''],
       ['Ticket sheets found', state.detected.filter((d) => d.ok).map((d) => `${d.name} (${d.rows} rows)`).join(' · ')],
       ['Tickets in the report sheet (unique Ticket ID)', state.tickets.length],
+      ['Tickets counted in the report (counting rule)', (state.counted || state.tickets).length],
       ['Tickets in all sheets merged (unique Ticket ID)', (state.allTickets || []).length],
       ['Tickets exported in "Tickets"', exported],
       ['First / last creation date', `${C.fmtDateTime(state.summary.minDate)} / ${C.fmtDateTime(state.summary.maxDate)}`],
@@ -2014,8 +2588,11 @@
       ['Gestor / Problema / Técnico', 'Current action split as GESTOR - PROBLEMA - TÉCNICO; spelling variants merged'],
       ['Week', 'ISO week (Monday–Sunday) calculated from the Creation date'],
       ['Duplicated Ticket ID rows', 'First row used for the figures; values of other rows kept in “Original rows (all sheets)”'],
-      ['Manual review', 'A case classified by a person as Incidencia or OT (“Sin gestor identificado” review) is counted that way everywhere; see the “Manual review” column'],
-      ['Source', state.source.kind === 'db' ? 'Team database on the server (every imported weekly file merged)' : 'Uploaded file only'],
+      ['Manual review', 'A case classified by a person as Incidencia or OT (Manual review tab / “Sin gestor identificado”) is counted that way everywhere; see the “Manual review” column'],
+      ['Two weekly files', state.combined ? 'Incidencias file + OTs file combined: every ticket counted once; a non-Failure ticket only in the Incidencias file or a Failure only in the OTs file is a suspected case for manual review' : 'One file'],
+      ['Counting rule', countRule() ? `Only tickets resolved by ${countRule().join(' / ')} (Restoration group ID, after any manual “Resolved by” change) or still open / returned are counted` : 'Every ticket is counted, whoever resolved it'],
+      ['Manual “Resolved by”', 'A person can state (with a comment) that a ticket was resolved by a Sortis group although Oceane shows another group; see the columns “Restoration group ID (Excel)” and “Resolved by — manual change”'],
+      ['Source', state.source.kind === 'db' ? 'Team database on the server (every imported weekly file merged)' : (state.files.length > 1 ? `Uploaded files: ${state.files.map((f) => `${f.name} (${ROLE_TXT[f.role]})`).join(' + ')}` : 'Uploaded file only')],
       [],
       ['Warnings while reading the file', ''],
       ...Array.from($('#warnings').querySelectorAll('li')).map((li) => ['', li.textContent]),
@@ -2084,6 +2661,7 @@
     initTeamControls();
     initTicketDialog();
     initSectionPicker();
+    initResolverDialog();
     initDatabase();
   }
 

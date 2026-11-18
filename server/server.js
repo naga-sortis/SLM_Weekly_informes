@@ -139,6 +139,20 @@ async function handleApi(req, res, url, db, maxUpload) {
       return sendJson(req, res, 200, db.removeClassification(id, url.searchParams.get('user')));
     }
   }
+  if (route === 'GET /api/activity') {
+    return sendJson(req, res, 200, db.activity({ since: url.searchParams.get('since') || '', limit: url.searchParams.get('limit') }));
+  }
+  if (route === 'GET /api/resolvers') return sendJson(req, res, 200, { resolvers: db.resolvers() });
+  if ((m = url.pathname.match(/^\/api\/resolvers\/([^/]{1,60})$/))) {
+    const id = decodeURIComponent(m[1]);
+    if (req.method === 'PUT') {
+      const body = await readJson(req, 64 * 1024);
+      return sendJson(req, res, 200, db.setResolver(id, body.group, body.resolverUser, body.comment, body.user));
+    }
+    if (req.method === 'DELETE') {
+      return sendJson(req, res, 200, db.removeResolver(id, url.searchParams.get('user')));
+    }
+  }
   if ((m = url.pathname.match(/^\/api\/tickets\/([^/]{1,60})\/history$/)) && req.method === 'GET') {
     return sendJson(req, res, 200, db.ticketHistory(decodeURIComponent(m[1])));
   }

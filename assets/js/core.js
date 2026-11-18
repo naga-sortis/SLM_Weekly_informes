@@ -439,6 +439,8 @@
     const missingOptional = new Set();
 
     for (const sheet of sheets) {
+      // a combined source can mix workbooks with different date systems
+      const d1904 = typeof sheet.date1904 === 'boolean' ? sheet.date1904 : date1904;
       const header = findHeader(sheet.rows);
       if (!header) { warnings.push(`Sheet "${sheet.name}": no "Ticket ID" header row found.`); continue; }
       const map = header.map;
@@ -458,7 +460,7 @@
       const rawOf = (row) => headerCols.map(({ c, name, isDate }) => {
         const v = row[c];
         if (isDate && v !== null && v !== undefined && v !== '') {
-          const ms = parseDate(v, date1904);
+          const ms = parseDate(v, d1904);
           return [name, ms === null ? str(v) : fmtDateTime(ms)];
         }
         // text exactly as written in the Excel (no trimming / space normalisation)
@@ -473,13 +475,13 @@
         if (seen.has(id)) {
           duplicates++;
           // Keep the first row for the report figures, but never lose information from the others.
-          mergeDetails(seen.get(id), rawOf(row), detailsOf(row, get, date1904), sheet.name);
+          mergeDetails(seen.get(id), rawOf(row), detailsOf(row, get, d1904), sheet.name);
           continue;
         }
-        const created = parseDate(get(row, 'creationDate'), date1904);
+        const created = parseDate(get(row, 'creationDate'), d1904);
         if (created === null) { invalidDates++; continue; }
-        const t = buildTicket(id, created, row, get, date1904);
-        Object.assign(t, detailsOf(row, get, date1904));
+        const t = buildTicket(id, created, row, get, d1904);
+        Object.assign(t, detailsOf(row, get, d1904));
         t.closureGroups = t.closureGroupId ? [groupLabel(t.closureGroupId, t.closureGroupName)] : [];
         t.raw = rawOf(row);
         t.rawAlt = {};
@@ -886,6 +888,7 @@
       inc,
       ot,
       gestores,
+      countRule: Array.isArray(options.countRule) && options.countRule.length ? options.countRule.map((g) => String(g).trim().toUpperCase()) : null,
       gestorInferred: inferGestor ? inferredCount : 0,
       noGestorTickets,
       gestorUnidentified: (gestores.find((g) => g.unidentified) || { total: 0 }).total,
@@ -999,6 +1002,19 @@
       add(yearOpened === directYear, `3.1: cases opened in ${r.trendYear} = tickets created that year up to the cut-off`, `Chart ${yearOpened} vs data ${directYear}.`);
     }
 
+    // Two files merged: one row per ticket, the counting rule and the manual "Resolved by" changes
+    const ids = new Set();
+    let dupIds = 0;
+    for (const t of scope) { if (ids.has(t.id)) dupIds++; ids.add(t.id); }
+    add(!dupIds, 'Each ticket is counted once (a ticket present in both files or in several sheets is merged)', `${dupIds} ticket(s) counted twice.`);
+    if (r.countRule) {
+      const bad = scope.filter((t) => !isCountable(t, r.countRule));
+      add(!bad.length, `Only cases resolved by ${r.countRule.join(' / ')} (or still open / returned) are counted`,
+        `${bad.length} counted case(s) were resolved by another group: ${bad.slice(0, 5).map((t) => t.id).join(', ')}.`);
+    }
+    const noComment = scope.filter((t) => t.resolverOverride && !String(t.resolverOverride.comment || '').trim());
+    add(!noComment.length, 'Every manual “Resolved by” change has a comment', `Missing for ${noComment.map((t) => t.id).join(', ')}.`);
+
     // Dates
     add(monthKeyOf(r.reportWeek.start) === r.reportMonth || monthKeyOf(r.reportWeek.end - 1) === r.reportMonth,
       `Report month (${monthLabel(r.reportMonth)}) contains the report week ${r.reportWeek.week}`, 'Month and week do not match.');
@@ -1069,6 +1085,170 @@
       }
     }
     return applied;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Two weekly files (Incidencias file + OTs file)                      */
+  /* ------------------------------------------------------------------ */
+
+  /** The Sortis restoration groups: the incidencias queue and the OTs queue. */
+  const SORTIS_GROUPS = ['XSP00025', 'XSP00027'];
+  const ROLE_LABELS = { INC: 'Incidencias file', OT: 'OTs file' };
+  /** Manual "Resolved by" value meaning: checked, really resolved by another group (stays not counted). */
+  const RESOLVER_OTHER = 'OTHER';
+
+  /**
+   * Which kind of weekly file this is, from its content: mostly Failure tickets → Incidencias file
+   * (e.g. the XSP00025 export), otherwise → OTs file (e.g. the XSP00027 “USERS” export).
+   */
+  function detectFileRole(sheets, opts = {}) {
+    const ok = detectSheets(sheets).filter((d) => d.ok).map((d) => d.name);
+    const ex = extractTickets(sheets.filter((s) => ok.includes(s.name)), opts);
+    let failures = 0;
+    for (const t of ex.tickets) if (categoryOf(t.type) === 'INC') failures++;
+    const total = ex.tickets.length;
+    return { role: total && failures * 2 >= total ? 'INC' : 'OT', failures, others: total - failures, total };
+  }
+
+  /** Name given to a sheet of `role` whose name is already used by a sheet of another file. */
+  function sheetNameForRole(name, role) {
+    return `${name} [${ROLE_LABELS[role] || 'file'}]`;
+  }
+
+  /**
+   * Put the sheets of several workbooks together. Each sheet keeps its file and role
+   * ({name, rows, role, file, date1904, origName}); the Incidencias file comes first, and a sheet
+   * name used twice gets the role of its file appended, so every sheet name stays unique.
+   * @param {{label:string, role:'INC'|'OT', date1904?:boolean, sheets:{name:string, rows:any[][]}[]}[]} files
+   */
+  function combineFiles(files) {
+    const used = new Set();
+    const out = [];
+    const ordered = files.map((f, i) => ({ f, i })).sort((a, b) => ((a.f.role === 'OT') - (b.f.role === 'OT')) || a.i - b.i).map((x) => x.f);
+    for (const f of ordered) {
+      for (const s of f.sheets) {
+        let name = s.name;
+        if (used.has(name)) {
+          name = sheetNameForRole(s.name, f.role);
+          for (let k = 2; used.has(name); k++) name = `${sheetNameForRole(s.name, f.role).slice(0, -1)} ${k}]`;
+        }
+        used.add(name);
+        out.push({ name, rows: s.rows, role: f.role, file: f.label, date1904: !!f.date1904, origName: s.name });
+      }
+    }
+    return out;
+  }
+
+  const SUSPECT_LABELS = {
+    OT_IN_INC: 'Not a Failure, but only in the Incidencias file — check whether it is an incidencia or an OT',
+    INC_IN_OT: 'Failure, but only in the OTs file — check whether it is an incidencia or an OT',
+  };
+
+  /**
+   * Record which file(s) each ticket comes from and flag the suspected ones: a non-Failure ticket
+   * found only in the Incidencias file, or a Failure found only in the OTs file. Suspected tickets
+   * keep their automatic classification until a person reviews them.
+   * @param sheets the sheets the tickets were extracted from (with role / file, see combineFiles)
+   */
+  function markSources(tickets, sheets) {
+    const info = new Map(sheets.map((s) => [s.name, s]));
+    const withRoles = sheets.some((s) => s.role === 'INC' || s.role === 'OT');
+    for (const t of tickets) {
+      const roles = new Set();
+      const files = [];
+      for (const n of t.sheets) {
+        const s = info.get(n);
+        if (!s) continue;
+        if (s.role) roles.add(s.role);
+        if (s.file && !files.includes(s.file)) files.push(s.file);
+      }
+      t.sourceRoles = Array.from(roles).sort();
+      t.sourceFiles = files;
+      const byType = categoryOf(t.type);
+      t.suspect = !withRoles ? ''
+        : (byType === 'OT' && roles.has('INC') && !roles.has('OT') ? 'OT_IN_INC'
+          : (byType === 'INC' && roles.has('OT') && !roles.has('INC') ? 'INC_IN_OT' : ''));
+    }
+  }
+
+  /**
+   * Manual “Resolved by”: a person states that a ticket was really resolved by a Sortis group
+   * (another group took it over in Oceane), or confirms that another group resolved it (OTHER).
+   * Every change needs a comment. The value from the Excel is kept in restorationGroupIdAuto.
+   * @param {Map<string,{group:string, user?:string, comment:string, by:string, at:string}>|Object} map
+   */
+  function applyResolvers(tickets, map) {
+    const get = (id) => (map instanceof Map ? map.get(id) : map && map[id]);
+    const names = new Map();
+    for (const t of tickets) {
+      if (t.restorationGroupIdAuto === undefined) {
+        t.restorationGroupIdAuto = t.restorationGroupId;
+        t.restorationGroupNameAuto = t.restorationGroupName || '';
+        t.restorationUserAuto = t.restorationUser || '';
+      }
+      const g = (t.restorationGroupIdAuto || '').toUpperCase();
+      if (g && t.restorationGroupNameAuto && !names.has(g)) names.set(g, t.restorationGroupNameAuto);
+    }
+    let applied = 0;
+    for (const t of tickets) {
+      const o = get(t.id);
+      const group = o && typeof o.group === 'string' ? o.group.trim().toUpperCase() : '';
+      if (group && o.comment && String(o.comment).trim()) {
+        t.resolverOverride = { group, user: o.user || '', comment: String(o.comment), by: o.by || '', at: o.at || '' };
+        if (group === RESOLVER_OTHER) {
+          t.restorationGroupId = t.restorationGroupIdAuto;
+          t.restorationGroupName = t.restorationGroupNameAuto;
+          t.restorationUser = t.restorationUserAuto;
+        } else {
+          t.restorationGroupId = group;
+          t.restorationGroupName = group === (t.restorationGroupIdAuto || '').toUpperCase() ? t.restorationGroupNameAuto : (names.get(group) || '');
+          // the engineer of the Excel belongs to the other group: keep it only if the group did not change
+          t.restorationUser = o.user || (group === (t.restorationGroupIdAuto || '').toUpperCase() ? t.restorationUserAuto : '');
+        }
+        applied++;
+      } else {
+        t.resolverOverride = null;
+        t.restorationGroupId = t.restorationGroupIdAuto;
+        t.restorationGroupName = t.restorationGroupNameAuto;
+        t.restorationUser = t.restorationUserAuto;
+      }
+    }
+    return applied;
+  }
+
+  /**
+   * Counted in the report when it is still open, was returned (DEVUELTO), or was resolved by one of
+   * the Sortis groups (after any manual “Resolved by” change).
+   */
+  function isCountable(t, groups = SORTIS_GROUPS) {
+    const set = groups instanceof Set ? groups : new Set(groups.map((g) => String(g).trim().toUpperCase()));
+    return !!(t.open || t.devuelto || set.has((t.restorationGroupId || '').toUpperCase()));
+  }
+
+  const REVIEW_REASONS = {
+    SUSPECT_TYPE: 'Suspected type',
+    OTHER_RESOLVER: 'Resolved by another group',
+    SIN_GESTOR: 'Sin gestor identificado',
+  };
+
+  /**
+   * Why a ticket needs a manual review, and whether each point is already reviewed.
+   * @returns {{code:string, label:string, detail:string, done:boolean}[]}
+   */
+  function reviewReasons(t, groups = SORTIS_GROUPS) {
+    const set = groups instanceof Set ? groups : new Set(groups.map((g) => String(g).trim().toUpperCase()));
+    const out = [];
+    if (t.suspect) out.push({ code: 'SUSPECT_TYPE', label: REVIEW_REASONS.SUSPECT_TYPE, detail: SUSPECT_LABELS[t.suspect] || '', done: !!t.classification });
+    const autoGroup = (t.restorationGroupIdAuto !== undefined ? t.restorationGroupIdAuto : t.restorationGroupId) || '';
+    if (!t.open && !t.devuelto && !set.has(autoGroup.toUpperCase())) {
+      out.push({ code: 'OTHER_RESOLVER', label: REVIEW_REASONS.OTHER_RESOLVER,
+        detail: autoGroup ? `Restored by ${autoGroup}${t.restorationGroupNameAuto ? ` (${t.restorationGroupNameAuto})` : ''} in the Excel` : 'Closed without a restoration group in the Excel',
+        done: !!t.resolverOverride });
+    }
+    if ((t.categoryAuto === 'INC' || t.category === 'INC') && !t.gestor && t.actionKind !== 'trabajando') {
+      out.push({ code: 'SIN_GESTOR', label: REVIEW_REASONS.SIN_GESTOR, detail: noGestorReason(t).label, done: !!t.classification });
+    }
+    return out;
   }
 
   /* ------------------------------------------------------------------ */
@@ -1546,5 +1726,7 @@
     monthKeyOf, monthLabel, monthShort, monthsEndingAt, prevMonthKey, nextMonthKey,
     fmtDateTime, fmtDate, toExcelSerial,
     computeReport, summarize, weeklyForCategory, validateReport, gestorKey, periodMonthsLabel, buildGestorMatcher, weekSplitText, computePeriod, validatePeriod, periodsAvailable, noGestorReason, NO_GESTOR_REASONS, TECH_OT, applyClassifications, analyzeSheets, computeTeam, validateTeam,
+    SORTIS_GROUPS, ROLE_LABELS, RESOLVER_OTHER, SUSPECT_LABELS, REVIEW_REASONS, detectFileRole, sheetNameForRole, combineFiles, markSources,
+    applyResolvers, isCountable, reviewReasons,
   };
 });

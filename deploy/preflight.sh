@@ -87,7 +87,7 @@ fi
 # ------------------------------------------------------------------ application
 section "3. Application"
 missing=""
-for f in index.html package.json server/server.js server/db.js server/backup.js assets/js/core.js assets/js/app.js assets/js/docx-report.js assets/js/charts.js assets/css/styles.css; do
+for f in index.html package.json server/server.js server/db.js server/backup.js assets/js/core.js assets/js/app.js assets/js/docx-report.js assets/js/charts.js assets/js/help.js assets/css/styles.css; do
   [ -f "$REPO_DIR/$f" ] || missing="$missing $f"
 done
 [ -n "$(ls "$REPO_DIR"/vendor/*.js 2>/dev/null)" ] || missing="$missing vendor/*.js"

@@ -400,3 +400,166 @@ test('Source sheets analysis', () => {
   assert.deepEqual(res.overlap.matrix, [[2, 1], [1, 1]]);
   assert.equal(res.uniqueTicketsAllSheets, 2);
 });
+
+/* ---------- Two weekly files (Incidencias file + OTs file), counting rule, manual “Resolved by” ---------- */
+
+const HEADER2 = [...HEADER, 'Restoration group ID', 'Restoration group abbreviation name', 'Restoration user name'];
+function sheet2(name, rows) {
+  return { name, rows: [HEADER2, ...rows.map((r) => HEADER2.map((h) => r[h] ?? null))] };
+}
+const t2 = (id, created, o = {}) => ({ ...ticket(id, created, o), 'Restoration group ID': o.rg ?? null, 'Restoration group abbreviation name': o.rgName ?? null, 'Restoration user name': o.ru ?? null });
+
+/** Incidencias file (mostly failures) and OTs file (mostly work orders) of the same week. */
+function twoFiles() {
+  const inc = [
+    t2('I1', [2026, 8, 21], { status: 'Closed', restored: [2026, 9, 21, 12], rg: 'XSP00025', ru: 'ARCE LETICIA' }),
+    t2('I2', [2026, 8, 22]), // open
+    t2('I3', [2026, 8, 22], { type: 'Work order', status: 'Closed', restored: [2026, 9, 22, 12], rg: 'XSP00025', ru: 'ARCE LETICIA' }), // suspected: WO only in the INC file
+    t2('B1', [2026, 8, 23], { status: 'Closed', restored: [2026, 9, 23, 12], rg: 'XSP00025', ru: 'ARCE LETICIA' }), // in both files
+    t2('X1', [2026, 8, 23], { status: 'Closed', restored: [2026, 9, 23, 12], rg: 'XSPLOGIESP02', rgName: 'FLMHW_LOGICALIS', ru: 'CALVO JORGE' }), // resolved by another group
+  ];
+  const ot = [
+    t2('O1', [2026, 8, 21], { type: 'Work order', action: 'JR - Trabajando', status: 'Closed', restored: [2026, 9, 21, 12], rg: 'XSP00027', rgName: 'SPOC_BO_EMS_USER', ru: 'PAREDES ADRIAN' }),
+    t2('O2', [2026, 8, 22], { type: 'Work order', action: 'JR - Trabajando' }), // open
+    t2('O3', [2026, 8, 22], { type: 'Failure', action: 'GV - Trabajando', status: 'Closed', restored: [2026, 9, 22, 12], rg: 'XSP00027', rgName: 'SPOC_BO_EMS_USER', ru: 'PAREDES ADRIAN' }), // suspected: Failure only in the OTs file
+    t2('B1', [2026, 8, 23], { status: 'Closed', restored: [2026, 9, 23, 12], rg: 'XSP00025', ru: 'ARCE LETICIA' }),
+    t2('O4', [2026, 8, 24], { type: 'Work order', action: 'DEVUELTO', status: 'Closed', rg: '00XMOA' }), // returned: always counted
+    t2('X2', [2026, 8, 24], { type: 'Work order', action: 'JR - Trabajando', status: 'Closed', restored: [2026, 9, 24, 12], rg: 'XSP00035', ru: 'OTRO' }),
+  ];
+  return { inc: [sheet2('asignados a', inc)], ot: [sheet2('asignados a', ot)] };
+}
+
+test('Two files: role detection, unique sheet names, tickets counted once, suspected tickets', () => {
+  const f = twoFiles();
+  assert.equal(C.detectFileRole(f.inc).role, 'INC');
+  assert.equal(C.detectFileRole(f.ot).role, 'OT');
+  // same sheet name in both files → the OTs file sheet is renamed; the Incidencias file comes first
+  const sheets = C.combineFiles([{ label: 'users.xlsx', role: 'OT', sheets: f.ot }, { label: 'xsp25.xlsx', role: 'INC', sheets: f.inc }]);
+  assert.deepEqual(sheets.map((s) => [s.name, s.role, s.file]), [['asignados a', 'INC', 'xsp25.xlsx'], ['asignados a [OTs file]', 'OT', 'users.xlsx']]);
+  assert.equal(C.sheetNameForRole('asignados a', 'OT'), 'asignados a [OTs file]');
+  const ex = C.extractTickets(sheets);
+  C.markSources(ex.tickets, sheets);
+  const by = Object.fromEntries(ex.tickets.map((t) => [t.id, t]));
+  assert.equal(ex.tickets.length, 10); // B1 once
+  assert.deepEqual(by.B1.sourceRoles, ['INC', 'OT']);
+  assert.deepEqual(by.B1.sourceFiles, ['xsp25.xlsx', 'users.xlsx']);
+  assert.equal(by.I3.suspect, 'OT_IN_INC');
+  assert.equal(by.O3.suspect, 'INC_IN_OT');
+  assert.deepEqual(ex.tickets.filter((t) => t.suspect).map((t) => t.id).sort(), ['I3', 'O3']);
+  // one file only, without roles: nothing is suspected
+  const one = C.extractTickets(f.inc);
+  C.markSources(one.tickets, f.inc);
+  assert.ok(one.tickets.every((t) => t.suspect === ''));
+});
+
+test('Counting rule: only cases resolved by XSP00025 / XSP00027, open or returned are counted', () => {
+  const f = twoFiles();
+  const sheets = C.combineFiles([{ label: 'a', role: 'INC', sheets: f.inc }, { label: 'b', role: 'OT', sheets: f.ot }]);
+  const ex = C.extractTickets(sheets);
+  C.markSources(ex.tickets, sheets);
+  C.applyResolvers(ex.tickets, new Map());
+  const rule = ['XSP00025', 'XSP00027'];
+  const counted = ex.tickets.filter((t) => C.isCountable(t, rule));
+  assert.deepEqual(ex.tickets.filter((t) => !C.isCountable(t, rule)).map((t) => t.id).sort(), ['X1', 'X2']);
+  assert.ok(counted.some((t) => t.id === 'O4')); // returned
+  assert.ok(counted.some((t) => t.id === 'I2')); // open
+  const w = [C.weekFromKey(202639)];
+  const r = C.computeReport(counted, { weeks: w, slmGroups: rule, countRule: rule });
+  assert.ok(r.checks.every((c) => c.ok), JSON.stringify(r.checks.filter((c) => !c.ok)));
+  assert.deepEqual(r.countRule, rule);
+  assert.deepEqual([r.inc[0].nuevos, r.ot[0].nuevos], [3, 5]); // INC: I1 I2 B1 · OT: I3 O1 O2 O3 (technician status) O4
+  // a counted case resolved by another group makes the report fail its check
+  const bad = C.computeReport(ex.tickets, { weeks: w, slmGroups: rule, countRule: rule });
+  const chk = bad.checks.find((c) => /Only cases resolved by/.test(c.label));
+  assert.equal(chk.ok, false);
+  // a ticket counted twice is caught
+  const dup = C.computeReport([...counted, counted[0]], { weeks: w, slmGroups: rule });
+  assert.equal(dup.checks.find((c) => /counted once/.test(c.label)).ok, false);
+});
+
+test('Manual “Resolved by”: counted when set to a Sortis group, “another group” stays out, undo restores the Excel', () => {
+  const f = twoFiles();
+  const sheets = C.combineFiles([{ label: 'a', role: 'INC', sheets: f.inc }, { label: 'b', role: 'OT', sheets: f.ot }]);
+  const ex = C.extractTickets(sheets);
+  C.markSources(ex.tickets, sheets);
+  const rule = ['XSP00025', 'XSP00027'];
+  const by = Object.fromEntries(ex.tickets.map((t) => [t.id, t]));
+  // a change without a comment is ignored
+  assert.equal(C.applyResolvers(ex.tickets, { X1: { group: 'XSP00025', comment: ' ' } }), 0);
+  assert.equal(C.isCountable(by.X1, rule), false);
+  const map = new Map([
+    ['X1', { group: 'XSP00025', comment: 'Taken by Logicalis, solved by us', by: 'Ana', at: '2026-11-18T10:00:00Z' }],
+    ['X2', { group: 'OTHER', comment: 'Really solved by XSP00035', by: 'Ana', at: '2026-11-18T10:05:00Z' }],
+  ]);
+  assert.equal(C.applyResolvers(ex.tickets, map), 2);
+  assert.deepEqual([by.X1.restorationGroupId, by.X1.restorationGroupIdAuto, by.X1.restorationUser, by.X1.resolverOverride.by], ['XSP00025', 'XSPLOGIESP02', '', 'Ana']);
+  assert.equal(C.isCountable(by.X1, rule), true);
+  assert.equal(C.isCountable(by.X2, rule), false);
+  assert.equal(by.X2.restorationGroupId, 'XSP00035');
+  // the review reasons: both reviewed now
+  const rr = (t) => C.reviewReasons(t, rule);
+  assert.deepEqual(rr(by.X1).map((x) => [x.code, x.done]), [['OTHER_RESOLVER', true]]);
+  assert.deepEqual(rr(by.X2).map((x) => [x.code, x.done]), [['OTHER_RESOLVER', true]]);
+  assert.deepEqual(rr(by.I3).map((x) => [x.code, x.done]), [['SUSPECT_TYPE', false]]);
+  assert.deepEqual(rr(by.I1), []);
+  // engineer given → used; the Sortis team view follows the change
+  C.applyResolvers(ex.tickets, new Map([['X1', { group: 'XSP00027', user: 'PAREDES ADRIAN', comment: 'Solved by Adrián', by: 'Ana' }]]));
+  assert.deepEqual([by.X1.restorationGroupId, by.X1.restorationUser, by.X1.restorationGroupName], ['XSP00027', 'PAREDES ADRIAN', 'SPOC_BO_EMS_USER']);
+  const team = C.computeTeam(ex.tickets, { groups: rule, queue: 'XSP00027' });
+  assert.ok(team.team.some((t) => t.id === 'X1'));
+  assert.ok(team.checks.every((c) => c.ok));
+  const counted = ex.tickets.filter((t) => C.isCountable(t, rule));
+  const r = C.computeReport(counted, { weeks: [C.weekFromKey(202639)], slmGroups: rule, countRule: rule });
+  assert.ok(r.checks.every((c) => c.ok), JSON.stringify(r.checks.filter((c) => !c.ok)));
+  assert.equal(r.inc[0].nuevos, 4); // X1 now counted
+  // undo
+  C.applyResolvers(ex.tickets, new Map());
+  assert.deepEqual([by.X1.restorationGroupId, by.X1.restorationUser, by.X1.resolverOverride], ['XSPLOGIESP02', 'CALVO JORGE', null]);
+  assert.equal(C.isCountable(by.X1, rule), false);
+});
+
+/** docx is only vendored for the browser: load it in a sandbox for the Word tests. */
+function loadDocx() {
+  try { return require('docx'); } catch (e) { /* not installed */ }
+  const vm = require('node:vm');
+  const ctx = { console, setTimeout, clearTimeout, TextEncoder, TextDecoder, Uint8Array, ArrayBuffer, Blob, URL, Buffer };
+  ctx.window = ctx; ctx.self = ctx; ctx.globalThis = ctx;
+  vm.createContext(ctx);
+  vm.runInContext(require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'vendor', 'docx.iife.js'), 'utf8'), ctx);
+  return ctx.docx;
+}
+
+test('Word report: two files, counting rule, manual changes and the optional annex', async () => {
+  const D = loadDocx();
+  const f = twoFiles();
+  const sheets = C.combineFiles([{ label: 'a', role: 'INC', sheets: f.inc }, { label: 'b', role: 'OT', sheets: f.ot }]);
+  const ex = C.extractTickets(sheets);
+  C.applyResolvers(ex.tickets, new Map([['X1', { group: 'XSP00025', comment: 'Taken by Logicalis, solved by us', by: 'Ana', at: '2026-11-18T10:00:00Z' }]]));
+  const rule = ['XSP00025', 'XSP00027'];
+  const r = C.computeReport(ex.tickets.filter((t) => C.isCountable(t, rule)), { weeks: [C.weekFromKey(202639)], slmGroups: rule, countRule: rule });
+  const R = require('../assets/js/docx-report.js');
+  const sizeOf = async (meta) => {
+    const doc = R.buildDocument(D, C, r, { title: 'T', ...meta }, {});
+    return (await (await D.Packer.toBlob(doc)).arrayBuffer()).byteLength;
+  };
+  const meta = { twoFiles: true, resolverChanged: 1, include: { adjust: true }, adjustments: [{ id: 'X1', created: '23/09/2026', change: 'Resuelto por XSP00025', reason: 'Taken by Logicalis, solved by us', by: 'Ana, 18/11/2026' }] };
+  assert.ok(await sizeOf(meta) > 5000); // a real .docx is produced
+  // the annex is optional (off by default) and the document builds without the new fields too
+  const plain = R.buildDocument(D, C, r, { title: 'T' }, {});
+  assert.ok(plain);
+  const txt = JSON.stringify(R.buildDocument(D, C, r, { title: 'T', ...meta }, {}));
+  assert.ok(txt.includes('los dos ficheros de BRISE'));
+  assert.ok(txt.includes('Se cuentan los casos resueltos por XSP00025 / XSP00027'));
+  assert.ok(txt.includes('ANEXO: AJUSTES MANUALES'));
+  assert.ok(!JSON.stringify(plain).includes('ANEXO'));
+  assert.ok(!JSON.stringify(plain).includes('dos ficheros'));
+});
+
+test('Per-sheet date system when two workbooks are combined', () => {
+  const base = sheet2('s', [t2('D1', [2026, 8, 21])]);
+  const shifted = { name: 's2', date1904: true, rows: base.rows.map((r, i) => (i === 0 ? r : r.map((v, c) => (c === 2 ? v - 1462 : v)))) };
+  shifted.rows[1][0] = 'D2';
+  const ex = C.extractTickets([base, shifted]);
+  const by = Object.fromEntries(ex.tickets.map((t) => [t.id, t]));
+  assert.equal(by.D1.created, by.D2.created);
+});

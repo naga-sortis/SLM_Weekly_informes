@@ -242,7 +242,16 @@
       return (level === 1 ? h1 : level === 2 ? h2 : h3)(`${nb} ${title}`);
     };
     // Which parts of the report to include (everything by default).
-    const inc = { intro: true, s21: true, s22: true, s23: true, s24: true, s25: true, s26: true, monthly: true, ...(meta.include || {}) };
+    const inc = { intro: true, s21: true, s22: true, s23: true, s24: true, s25: true, s26: true, monthly: true, adjust: false, ...(meta.include || {}) };
+    // Source: one BRISE file, or the two weekly files (incidencias + OTs) merged.
+    const twoFiles = !!meta.twoFiles;
+    const qInc = meta.queueInc || 'XSP00025', qOt = meta.queueOt || 'XSP00027';
+    const sourceTxt = twoFiles
+      ? `Las tablas y gráficos presentados en este informe tienen como base los dos ficheros de BRISE que nos envía semanalmente el CC – OSS: el fichero de incidencias (cola ${qInc}) y el fichero de OTs (cola ${qOt}); cada caso se cuenta una sola vez aunque aparezca en los dos ficheros.`
+      : 'Las tablas y gráficos presentados en este informe tienen como base el fichero de BRISE que nos envía semanalmente el CC – OSS.';
+    const ruleTxt = report.countRule
+      ? ` Se cuentan los casos resueltos por ${report.countRule.join(' / ')} y los que siguen abiertos o han sido devueltos; los casos resueltos por otros grupos no se incluyen.`
+      : '';
     let needBreak = true; // the first section after the table of contents starts on a new page
     const startTop = (forceBreak) => {
       if (forceBreak || needBreak) children.push(new D.Paragraph({ children: [new D.PageBreak()] }));
@@ -260,7 +269,7 @@
           : n === 2 ? `, junto con la evolución de la semana ${weeks[0].week} (desde el ${C.fmtDate(weeks[0].start)}).` : '.') +
         ' Cada semana refleja la situación de los casos al cierre de esa semana.', { size: 21 }, { spacing: { after: 120 } }));
       children.push(text(
-        'Las tablas y gráficos presentados en este informe tienen como base el fichero de BRISE que nos envía semanalmente el CC – OSS. ' +
+        `${sourceTxt}${ruleTxt} ` +
         `Datos disponibles hasta el ${C.fmtDateTime(meta.dataUntil)}.` +
         (report.partialWeek ? ` La semana ${rw.week} se presenta con los datos disponibles a esa fecha.` : ''), { size: 21 }, { spacing: { after: 120 } }));
     }
@@ -283,7 +292,7 @@
         const dt = chartDataTable(images.charts.weekly.table);
         if (dt) children.push(dt, spacer(160));
       }
-      children.push(text('Las tablas y gráficos presentados en este informe tienen como base el fichero de BRISE que nos envía semanalmente el CC – OSS',
+      children.push(text(sourceTxt.replace(/\.$/, '') + (ruleTxt ? `.${ruleTxt}` : ''),
         { italics: true, size: 17, color: '606060' }));
     }
 
@@ -296,6 +305,7 @@
         if (report.gestorUnidentified) notes.push(`“Sin gestor identificado”: incidencias cuya acción actual no indica gestor (sin acción, devueltas o cerradas). Los casos con un técnico trabajando en la acción actual (p. ej. “JR - Trabajando”) se cuentan como OTs.`);
         if (report.gestorInferred) notes.push(`${report.gestorInferred} incidencia(s) sin gestor en la acción actual se han asignado según el gestor citado en su descripción.`);
         if (meta.manualReviewed) notes.push(`${meta.manualReviewed} caso(s) de estas semanas se han revisado manualmente y se cuentan como incidencia u OT según esa revisión.`);
+        if (meta.resolverChanged) notes.push(`${meta.resolverChanged} caso(s) de estas semanas figuraban en Oceane como resueltos por otro grupo y, tras su revisión, se cuentan como resueltos por el equipo (${(report.countRule || [qInc, qOt]).join(' / ')}).`);
         children.push(text(notes.join(' '), { italics: true, size: 17, color: '606060' }, { spacing: { before: 80 } }));
       } else {
         children.push(text('No hay incidencias nuevas en las semanas del informe.', { italics: true }));
@@ -534,6 +544,20 @@
       if (T.restorationGroups.length > RG.length) {
         children.push(text(`Se muestran los ${RG.length} grupos con más casos de ${T.restorationGroups.length}.`, { italics: true, size: 17, color: '606060' }, { spacing: { before: 80 } }));
       }
+    }
+
+    /* ---------- Anexo: ajustes manuales (optional) ---------- */
+    if (inc.adjust && Array.isArray(meta.adjustments) && meta.adjustments.length) {
+      startTop(true);
+      children.push(H(1, 'ANEXO: AJUSTES MANUALES'));
+      children.push(text(`Casos de las semanas ${weeks[0].week} a ${rw.week} revisados manualmente: clasificación incidencia / OT y grupo que los resolvió. Cada ajuste queda registrado con la persona, la fecha y el motivo.`,
+        { size: 20 }, { spacing: { after: 160 } }));
+      const AW = [1500, 1500, 2400, CONTENT_W - 1500 - 1500 - 2400 - 2300, 2300];
+      children.push(table([
+        new D.TableRow({ tableHeader: true, children: ['Ticket', 'Creación', 'Ajuste', 'Motivo', 'Revisado por'].map((h, i) => cell(h, { width: AW[i], fill: DARK, color: 'FFFFFF', bold: true, left: i > 1 })) }),
+        ...meta.adjustments.map((a, idx) => new D.TableRow({ children: [a.id, a.created, a.change, a.reason, a.by].map((v, i) =>
+          cell(v, { width: AW[i], left: i > 1, size: 16, fill: idx % 2 ? GREY : undefined })) })),
+      ], AW));
     }
 
     /* ---------- fill in the table of contents ---------- */

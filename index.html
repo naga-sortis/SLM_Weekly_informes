@@ -24,6 +24,10 @@
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Zm-1 14-4-4 1.4-1.4L11 13.2l4.6-4.6L17 10l-6 6Z"/></svg>
         <span id="privacyText">Processed locally — nothing is uploaded</span>
       </span>
+      <button id="helpBtn" class="btn small help-top" type="button" title="What each section does, and a guided tour">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm1 17h-2v-2h2v2Zm2.1-7.7-.9.9c-.7.7-1.2 1.3-1.2 2.8h-2v-.5c0-1.1.5-2.1 1.2-2.8l1.2-1.3c.4-.4.6-.9.6-1.4a2 2 0 0 0-4 0H8a4 4 0 1 1 8 0c0 .9-.4 1.6-.9 2.3Z"/></svg>
+        Help &amp; tutorial
+      </button>
       <button id="themeToggle" class="icon-btn" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.5 0-1-.1-1.4A5.5 5.5 0 0 1 13.4 3.1 9 9 0 0 0 12 3Z"/></svg>
       </button>
@@ -36,20 +40,21 @@
       <div class="card-head">
         <span class="step">1</span>
         <div>
-          <h2>Upload the ticket export</h2>
-          <p class="muted">Excel file exported from Oceane / BRISE (.xlsx, .xls or .csv). The sheet with the <code>Ticket ID</code> header is detected automatically.</p>
+          <h2 data-help="files">Upload the weekly files</h2>
+          <p class="muted">The two Oceane / BRISE exports of the week — the <b>Incidencias file</b> (XSP00025) and the <b>OTs file</b> (XSP00027 “USERS”) — or a single file as before (.xlsx, .xls or .csv). The ticket sheets and the kind of each file are detected automatically.</p>
         </div>
       </div>
       <label id="dropZone" class="dropzone" for="fileInput" tabindex="0">
-        <input id="fileInput" type="file" accept=".xlsx,.xlsm,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" hidden>
+        <input id="fileInput" type="file" multiple accept=".xlsx,.xlsm,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" hidden>
         <svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true"><path fill="currentColor" d="M19 15v4H5v-4H3v4a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4h-2ZM11 5.8V16h2V5.8l3.6 3.6L18 8l-6-6-6 6 1.4 1.4L11 5.8Z"/></svg>
-        <span class="dz-title">Drop the Excel file here or <u>browse</u></span>
+        <span class="dz-title">Drop the Excel file(s) here or <u>browse</u></span>
         <span class="dz-hint" id="dzHint">Your file never leaves this computer</span>
       </label>
+      <div id="filesList" class="files-list" hidden></div>
       <div id="dbBox" class="dbbox" hidden>
         <div class="db-head">
           <div>
-            <strong>Team database</strong> <span class="muted small" id="dbStats"></span>
+            <strong data-help="database">Team database</strong> <span class="muted small" id="dbStats"></span>
             <div class="muted small" id="dbLast"></div>
           </div>
           <div class="db-actions">
@@ -58,10 +63,27 @@
             <button id="btnUseDb" type="button" class="btn small">Use database for the reports</button>
             <button id="btnImports" type="button" class="btn small">Import history</button>
             <button id="btnBackup" type="button" class="btn small" title="Download a copy of the whole database">Backup</button>
+            <button id="btnActivity" type="button" class="btn small" hidden aria-expanded="false" title="What the team did: imports, classifications and “Resolved by” changes — updated live">Team activity <span id="actBadge" class="tab-count" hidden></span></button>
+            <span id="liveDot" class="live" hidden></span>
           </div>
         </div>
         <div id="dbPreview" class="db-preview" hidden></div>
         <div id="dbImports" class="table-wrap" hidden></div>
+        <div id="dbRemote" class="db-remote" hidden></div>
+        <div id="dbActivity" class="activity" hidden>
+          <div class="toolbar wrap">
+            <strong data-help="activity">Team activity</strong>
+            <label class="inline-check"><input id="actOthers" type="checkbox"> Other users only</label>
+            <select id="actKind" aria-label="Kind of activity">
+              <option value="">Everything</option>
+              <option value="import">Imports</option>
+              <option value="classification">Incidencia / OT reviews</option>
+              <option value="resolver">“Resolved by” changes</option>
+            </select>
+            <span class="muted small" id="actInfo"></span>
+          </div>
+          <ul id="actList" class="act-list"></ul>
+        </div>
       </div>
       <div id="loadStatus" class="status" hidden></div>
       <div id="fileInfo" class="file-info" hidden>
@@ -82,7 +104,7 @@
       <div class="card-head">
         <span class="step">2</span>
         <div>
-          <h2>Report week &amp; details</h2>
+          <h2 data-help="settings">Report week &amp; details</h2>
           <p class="muted">Choose the week to report (default: the latest week in the file). The week number, dates and month are taken from that week everywhere — on this page and in the Word report.</p>
         </div>
       </div>
@@ -114,11 +136,15 @@
         <div class="field span-2 checkbox">
           <label><input id="inferGestor" type="checkbox"> Also take the gestor from the description when “Current action” has none <span class="muted">(optional — flagged in the report)</span></label>
         </div>
+        <div class="field span-4 checkbox count-rule" id="onlySortisField">
+          <label><input id="onlySortis" type="checkbox"> Count only the cases resolved by the SLM / Sortis groups above <span class="muted">(Restoration group XSP00025 / XSP00027 — open and returned cases always count; on by default when both files are loaded)</span></label>
+          <span data-help="countRule"></span>
+        </div>
       </div>
 
       <div id="periodBanner" class="period-banner" role="status" aria-live="polite"></div>
       <div id="checksBox" class="checks" hidden>
-        <button id="checksToggle" type="button" class="checks-head" aria-expanded="false"></button>
+        <div class="checks-row"><button id="checksToggle" type="button" class="checks-head" aria-expanded="false"></button><span data-help="checks"></span></div>
         <ul id="checksList" hidden></ul>
       </div>
 
@@ -179,6 +205,7 @@
             <label><input type="checkbox" data-sec="monthly" checked> Detalle mensual (3)</label>
             <label><input type="checkbox" id="secPeriod" checked> Month / Year summary <span class="muted">(Month / Year tab)</span></label>
             <label><input type="checkbox" id="secTeam"> Sortis team <span class="muted">(Sortis team tab)</span></label>
+            <label title="Tickets of the report weeks reviewed manually, with the change, the reason, who and when — internal, off by default"><input type="checkbox" data-sec="adjust"> Anexo: ajustes manuales <span class="muted">(internal)</span></label>
           </fieldset>
         </div>
       </details>
@@ -192,6 +219,7 @@
           <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Zm-1 7V3.5L18.5 9H13Zm-4.6 3h1.9l1.2 2 1.2-2h1.9l-2.1 3 2.1 3h-1.9l-1.2-2-1.2 2H8.4l2.1-3-2.1-3Z"/></svg>
           Download extracted data (Excel)
         </button>
+        <span data-help="word"></span>
         <span id="actionStatus" class="muted" role="status" aria-live="polite"></span>
       </div>
     </section>
@@ -202,6 +230,7 @@
 
       <nav class="tabs" role="tablist" aria-label="Report sections">
         <button role="tab" class="tab" data-tab="sources" aria-selected="false">Source sheets</button>
+        <button role="tab" class="tab" data-tab="review" aria-selected="false">Manual review</button>
         <button role="tab" class="tab active" data-tab="weekly" aria-selected="true">Weekly detail</button>
         <button role="tab" class="tab" data-tab="gestor" aria-selected="false">Cases by gestor</button>
         <button role="tab" class="tab" data-tab="pending" aria-selected="false">Unresolved cases</button>
@@ -212,7 +241,7 @@
       </nav>
 
       <div class="tab-panel card" data-panel="sources" hidden>
-        <h3>Source sheets <span class="muted small" id="srcLabel"></span></h3>
+        <h3 data-help="sources">Source sheets <span class="muted small" id="srcLabel"></span></h3>
         <p class="muted small">What each sheet of the source contains, before any report rule is applied — check it first. Ticket sheets are those with a <code>Ticket ID</code> header row.</p>
         <div class="table-wrap" id="srcSummary"></div>
         <ul class="src-notes" id="srcNotes"></ul>
@@ -233,8 +262,14 @@
         </div>
       </div>
 
+      <div class="tab-panel card" data-panel="review" hidden>
+        <h3 data-help="review">Manual review <span class="muted small">(tickets the tool cannot decide alone — review them before downloading the Word report)</span></h3>
+        <p class="muted small">Three reasons: <b>Suspected type</b> (a non-Failure ticket only in the Incidencias file, or a Failure only in the OTs file), <b>Resolved by another group</b> (closed by a group other than the Sortis queues, so not counted) and <b>Sin gestor identificado</b>. Each decision is recorded with your name and the date. Click a Ticket ID to see every detail.</p>
+        <div id="rvBody"></div>
+      </div>
+
       <div class="tab-panel card" data-panel="weekly">
-        <h3>2.1 Casos tratados</h3>
+        <h3 data-help="weekly">2.1 Casos tratados</h3>
         <p class="muted small" id="weeklyNote"></p>
         <div class="table-wrap" id="tblNew"></div>
         <div class="table-wrap" id="tblBacklogNo"></div>
@@ -258,14 +293,14 @@
       </div>
 
       <div class="tab-panel card" data-panel="gestor" hidden>
-        <h3>2.2 Nº casos por gestor <span class="muted small">(every new incidencia of the week, by the gestor in “Current action”)</span></h3>
+        <h3 data-help="gestor">2.2 Nº casos por gestor <span class="muted small">(every new incidencia of the week, by the gestor in “Current action”)</span></h3>
         <p class="muted small" id="gestorNote"></p>
         <div class="table-wrap" id="tblGestor"></div>
         <div id="noGestorPanel" class="nogestor"></div>
       </div>
 
       <div class="tab-panel card" data-panel="pending" hidden>
-        <h3>2.4 Detalle de los casos sin resolver</h3>
+        <h3 data-help="pending">2.4 Detalle de los casos sin resolver</h3>
         <div class="toolbar">
           <div class="seg" role="group" aria-label="Filter by type" id="pendingSeg">
             <button type="button" class="seg-btn active" data-v="all">All</button>
@@ -278,7 +313,7 @@
       </div>
 
       <div class="tab-panel card" data-panel="monthly" hidden>
-        <h3>Casos nuevos por semana</h3>
+        <h3 data-help="monthly">Casos nuevos por semana</h3>
         <p class="muted small">Same figures as the KPIs and “Nuevos durante la semana” in table 2.1.</p>
         <div class="charts single">
           <figure class="chart-card"><figcaption>Casos nuevos por semana (Incidencias y OTs)</figcaption><div class="chart-box"><canvas id="chWeekly"></canvas></div></figure>
@@ -296,7 +331,7 @@
       </div>
 
       <div class="tab-panel card" data-panel="period" hidden>
-        <h3>Month / Year summary <span class="muted small">(all incidencias + OTs created in the period)</span></h3>
+        <h3 data-help="period">Month / Year summary <span class="muted small">(all incidencias + OTs created in the period)</span></h3>
         <div class="toolbar wrap">
           <label class="inline-label" for="pYear">Year</label>
           <select id="pYear" aria-label="Year"></select>
@@ -322,7 +357,7 @@
       </div>
 
       <div class="tab-panel card" data-panel="team" hidden>
-        <h3>Sortis team <span class="muted small" id="tGroupsLabel"></span></h3>
+        <h3 data-help="team">Sortis team <span class="muted small" id="tGroupsLabel"></span></h3>
         <p class="muted small">Tickets whose <i>Restoration group ID</i> is one of the SLM group IDs (step 2), taken from <b>all ticket sheets</b> of the file. The engineer is the <i>Restoration user name</i>. Click a Ticket ID to see every detail.</p>
         <div class="toolbar wrap">
           <label class="inline-label" for="tYear">Year</label>
@@ -361,7 +396,7 @@
       </div>
 
       <div class="tab-panel card" data-panel="data" hidden>
-        <h3>Extracted data</h3>
+        <h3 data-help="data">Extracted data</h3>
         <div class="toolbar wrap">
           <input id="dataSearch" type="search" placeholder="Search ticket, gestor, group, action…" aria-label="Search">
           <select id="fType" aria-label="Filter type"><option value="">All types</option><option value="INC">Incidencias</option><option value="OT">OTs</option></select>
@@ -398,8 +433,8 @@
 
     <section id="emptyState" class="empty">
       <div class="empty-grid">
-        <div><h4>1 · Upload</h4><p>Drop the weekly ticket export. Ticket ID, third-party reference, dates, priority, status, initiator group and current action are extracted.</p></div>
-        <div><h4>2 · Review</h4><p>Check weekly tables, cases by gestor, unresolved cases and monthly charts directly on the page.</p></div>
+        <div><h4>1 · Upload</h4><p>Drop the two weekly exports (Incidencias file + OTs file) or a single file. Ticket ID, third-party reference, dates, priority, status, initiator group and current action are extracted, and both files are merged.</p></div>
+        <div><h4>2 · Review</h4><p>Review the suspected tickets in Manual review, then check weekly tables, cases by gestor, unresolved cases and monthly charts directly on the page.</p></div>
         <div><h4>3 · Download</h4><p>Get the informe as a Word document, and the extracted data as an Excel file.</p></div>
       </div>
     </section>
@@ -418,6 +453,64 @@
     <div id="tdBody"></div>
   </dialog>
 
+  <dialog id="resolverDialog" class="small-dialog" aria-labelledby="rdTitle">
+    <div class="td-head">
+      <div><h2 id="rdTitle">Resolved by</h2><div class="muted small">Which group really resolved the ticket <span data-help="resolver"></span></div></div>
+      <button type="button" class="icon-btn" id="rdClose" aria-label="Close">✕</button>
+    </div>
+    <div class="rd-body">
+      <div id="rdInfo" class="rd-info"></div>
+      <div class="field">
+        <label for="rdGroup">Resolved by</label>
+        <select id="rdGroup"></select>
+      </div>
+      <div class="field" id="rdUserRow">
+        <label for="rdUser">Engineer who resolved it <span class="muted">(optional)</span></label>
+        <input id="rdUser" type="text" list="rdUsers" maxlength="120" placeholder="Restoration user name">
+        <datalist id="rdUsers"></datalist>
+      </div>
+      <div class="field">
+        <label for="rdComment">Reason for the change <span class="muted">(required — e.g. “Taken over by XSPLOGIESP02 in Oceane but solved by our engineer, see the actions of 14/11”)</span></label>
+        <textarea id="rdComment" rows="3" maxlength="1000" required></textarea>
+      </div>
+      <p class="muted small" id="rdWho"></p>
+      <div class="actions">
+        <button type="button" class="btn primary" id="rdSave">Save</button>
+        <button type="button" class="btn" id="rdRemove">Back to the Excel value</button>
+        <button type="button" class="btn" id="rdCancel">Cancel</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="helpDialog" class="small-dialog help-dialog" aria-labelledby="hdTitle">
+    <div class="td-head">
+      <div><div class="muted small">Help</div><h2 id="hdTitle"></h2></div>
+      <button type="button" class="icon-btn" id="hdClose" aria-label="Close">✕</button>
+    </div>
+    <div id="hdBody" class="hd-body"></div>
+    <div class="hd-foot">
+      <label class="inline-label" for="hdTopics">Other topics</label>
+      <select id="hdTopics"></select>
+      <span class="spacer"></span>
+      <button type="button" class="btn primary small" id="hdTour">Start the guided tour</button>
+      <button type="button" class="btn small" id="hdDone">Close</button>
+    </div>
+  </dialog>
+
+  <div id="tourSpot" class="tour-spot" hidden></div>
+  <div id="tourPop" class="tour-pop" role="dialog" aria-labelledby="tourTitle" hidden>
+    <div class="tour-step muted small" id="tourStep"></div>
+    <h3 id="tourTitle"></h3>
+    <div id="tourBody"></div>
+    <div class="tour-actions">
+      <button type="button" class="btn small" id="tourMore">More about this</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn small" id="tourPrev">‹ Back</button>
+      <button type="button" class="btn small primary" id="tourNext">Next ›</button>
+      <button type="button" class="icon-btn" id="tourClose" aria-label="End the tour">✕</button>
+    </div>
+  </div>
+
   <div id="toast" class="toast" role="alert" hidden></div>
 
   <script src="vendor/xlsx.full.min.js"></script>
@@ -426,6 +519,7 @@
   <script src="assets/js/core.js"></script>
   <script src="assets/js/charts.js"></script>
   <script src="assets/js/docx-report.js"></script>
+  <script src="assets/js/help.js"></script>
   <script src="assets/js/app.js"></script>
 </body>
 </html>
