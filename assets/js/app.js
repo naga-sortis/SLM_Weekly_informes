@@ -512,7 +512,8 @@
     $('#pGestor').replaceChildren(p.gestores.length ? el('table', { class: 'rep compact' },
       el('thead', null, el('tr', { class: 'weeks' }, el('th', { text: 'GESTOR' }), el('th', { text: 'Incidencias' }), el('th', { text: 'OTs' }), el('th', { text: 'Total' }))),
       el('tbody', null,
-        p.gestores.map((g) => el('tr', { class: g.unidentified ? 'unidentified' : (g.techOT ? 'techot' : null), title: g.techOT ? 'Tickets whose Current action is a technician / work status (e.g. “JR - Trabajando”): counted as OTs' : null },
+        p.gestores.map((g) => el('tr', { class: g.unidentified ? 'unidentified' : (g.techOT || g.techInc ? 'techot' : null), title: g.techOT ? 'Tickets whose Current action is a technician / work status (e.g. “JR - Trabajando”): counted as OTs'
+          : (g.techInc ? 'Technician / work status in Current action, but reviewed manually as incidencias' : null) },
           el('td', { text: g.gestor, title: g.unidentified ? 'Show these tickets' : null,
             onclick: g.unidentified ? () => $('#pNoGestorPanel').scrollIntoView({ behavior: 'smooth', block: 'start' }) : null }), el('td', { class: g.inc ? null : 'zero', text: g.inc }), el('td', { class: g.ot ? null : 'zero', text: g.ot }),
           el('td', { text: g.total, style: 'font-weight:600' }))),
@@ -535,6 +536,7 @@
     const parts = [`Los ${g.labels.length} gestores con más casos`];
     if (g.othersCount) parts.push(`otros ${g.othersCount} gestores suman ${g.othersTotal} casos`);
     if (g.techOTTotal) parts.push(`${g.techOTTotal} OTs con técnico trabajando en la acción actual`);
+    if (g.techIncTotal) parts.push(`${g.techIncTotal} incidencias con técnico trabajando en la acción actual (revisadas manualmente)`);
     if (g.unidentifiedTotal) parts.push(`${g.unidentifiedTotal} casos sin gestor en la acción actual`);
     return parts.join('; ') + ' (detalle completo en la tabla).';
   }
@@ -1788,11 +1790,32 @@
   }
 
   function updateWordButton() {
-    const weeklyFail = state.report && state.report.checks.some((c) => !c.ok);
-    const periodFail = $('#pInWord').checked && state.period && state.period.checks.some((c) => !c.ok);
-    const teamFail = $('#secTeam').checked && state.team && state.team.checks.some((c) => !c.ok);
-    $('#btnWord').disabled = !!(weeklyFail || periodFail || teamFail);
-    $('#btnWord').title = weeklyFail || periodFail || teamFail ? 'Blocked: the report did not pass the consistency checks' : '';
+    const failed = (x) => (x && x.checks ? x.checks.filter((c) => !c.ok) : []);
+    const blocks = [];
+    if (failed(state.report).length) blocks.push({ area: 'Weekly report', checks: failed(state.report), tab: 'weekly' });
+    if ($('#pInWord').checked && failed(state.period).length) {
+      blocks.push({ area: `Month / Year section (${state.period.label})`, checks: failed(state.period), tab: 'period',
+        skip: 'Leave the Month / Year section out of the Word report', onSkip: () => { $('#pInWord').checked = false; $('#secPeriod').checked = false; } });
+    }
+    if ($('#secTeam').checked && failed(state.team).length) {
+      blocks.push({ area: `Sortis team section (${state.team.label})`, checks: failed(state.team), tab: 'team',
+        skip: 'Leave the Sortis team section out of the Word report', onSkip: () => { $('#secTeam').checked = false; $('#tInWord').checked = false; } });
+    }
+    const btn = $('#btnWord');
+    btn.disabled = blocks.length > 0;
+    btn.title = blocks.length ? `Blocked: ${blocks.map((b) => b.area).join(' and ')} did not pass the consistency checks — see below the button` : '';
+    // Say exactly what blocks the export, and how to get past it.
+    const box = $('#wordBlock');
+    if (!blocks.length) { box.hidden = true; box.replaceChildren(); return; }
+    box.hidden = false;
+    box.replaceChildren(
+      el('strong', { text: '✖ The Word report is blocked because a consistency check failed:' }),
+      el('ul', null, blocks.map((b) => el('li', null,
+        el('b', { text: `${b.area}: ` }), b.checks.map((c) => c.label + (c.detail ? ` — ${c.detail}` : '')).join(' · '),
+        el('div', { class: 'row' },
+          el('button', { type: 'button', class: 'btn small', text: 'Show the section', onclick: () => { $(`[data-tab="${b.tab}"]`).click(); $(`[data-tab="${b.tab}"]`).scrollIntoView({ behavior: 'smooth', block: 'start' }); } }),
+          b.skip ? el('button', { type: 'button', class: 'btn small', text: b.skip, onclick: () => { b.onSkip(); updateWordButton(); toast('Section left out — the Word report can be downloaded.'); } }) : null)))),
+      el('p', { class: 'muted small', text: 'The yellow notes under the upload box (duplicated rows, repeated tickets, dates) are information only — they never block the export.' }));
   }
 
   function initSectionPicker() {
@@ -1947,7 +1970,8 @@
         r.weeks.map((w) => el('th', { text: `sem. ${w.week}`, title: weekLabel(w.key) })),
         el('th', { text: 'Total' }))),
       el('tbody', null,
-        r.gestores.map((g) => el('tr', { class: g.unidentified ? 'unidentified' : (g.techOT ? 'techot' : null) },
+        r.gestores.map((g) => el('tr', { class: g.unidentified ? 'unidentified' : (g.techOT || g.techInc ? 'techot' : null),
+          title: g.techInc ? 'Technician / work status in Current action (e.g. “JR - Trabajando”), but reviewed manually as incidencias' : null },
           el('td', { text: g.gestor, title: g.unidentified ? 'Show these tickets' : null,
             onclick: g.unidentified ? () => $('#noGestorPanel').scrollIntoView({ behavior: 'smooth', block: 'start' }) : null }),
           g.counts.map((v) => el('td', { class: v === 0 ? 'zero' : null, text: v })),
@@ -1958,6 +1982,8 @@
     const notes = [`Totals match “Nuevos durante la semana” (Incidencias) in 2.1.`];
     if (r.gestorUnidentified) notes.push(`Across the ${r.weeks.length} week(s) shown, ${r.gestorUnidentified} incidencia(s) have no gestor in “Current action” (empty, DEVUELTO or “Cerrado”; technician statuses such as “JR - Trabajando” are counted as OTs) and are shown as “Sin gestor identificado”.`);
     if (r.gestorInferred) notes.push(`${r.gestorInferred} gestor(s) were taken from the ticket description (option enabled); this is stated in the Word report.`);
+    const ti = r.gestores.find((g) => g.techInc);
+    if (ti) notes.push(`“Incidencias (técnico trabajando)”: ${ti.total} case(s) whose Current action is a technician status but that a person reviewed as incidencias.`);
     $('#gestorNote').textContent = notes.join(' ');
     const movedOut = state.tickets.filter((t) => t.classification && t.category === 'OT' && t.categoryAuto === 'INC' && !t.gestor &&
       t.created >= r.weeks[0].start && t.created < r.cutoff);

@@ -105,7 +105,8 @@
         'Choose the sections to include — the numbering adapts automatically.',
         '“Anexo: ajustes manuales” (optional) lists the tickets of the report weeks reviewed manually, with the change, the reason, who and when. Leave it unticked if the customer should not see it.',
       ],
-      points: ['The button is disabled while a consistency check fails.'],
+      points: ['The button is disabled while a consistency check fails: a red box under the button names the failed check and the section. If the failure is in an optional section (Month / Year or Sortis team), you can leave that section out with one click.',
+        'The yellow notes under the upload box (duplicated rows, tickets repeated with different values, dates) are information only — they never block the export.'],
     },
     sources: {
       title: 'Source sheets',
@@ -133,7 +134,7 @@
       intro: 'Every new incidencia of each week, under the gestor taken from “Current action” (GESTOR - PROBLEMA - TÉCNICO).',
       points: [
         'Spelling variants are merged (NFM-T / NFMT, ENM 3 / ENM3…). The weekly totals always equal “Nuevos durante la semana” of 2.1.',
-        'Technician statuses (“JR - Trabajando”) are OTs and have their own row “OTs (técnico trabajando)”.',
+        'Technician statuses (“JR - Trabajando”) are OTs and have their own row “OTs (técnico trabajando)”. If a person reviews one of them as an incidencia (e.g. a Failure of the OTs file), it is counted in the row “Incidencias (técnico trabajando)”.',
         '“Sin gestor identificado” — incidencias whose action has no gestor. The panel below lists them with the reason; classify each one as Incidencia or OT and, if needed, change its “Resolved by”.',
       ],
     },

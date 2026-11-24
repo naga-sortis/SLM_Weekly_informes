@@ -563,3 +563,22 @@ test('Per-sheet date system when two workbooks are combined', () => {
   const by = Object.fromEntries(ex.tickets.map((t) => [t.id, t]));
   assert.equal(by.D1.created, by.D2.created);
 });
+
+test('A technician-status Failure reviewed as Incidencia has its own row and never blocks the report', () => {
+  const f = twoFiles(); // O3: Failure only in the OTs file, Current action “GV - Trabajando”
+  const sheets = C.combineFiles([{ label: 'a', role: 'INC', sheets: f.inc }, { label: 'b', role: 'OT', sheets: f.ot }]);
+  const ex = C.extractTickets(sheets);
+  C.markSources(ex.tickets, sheets);
+  C.applyClassifications(ex.tickets, new Map([['O3', { category: 'INC', user: 'Ana' }]]));
+  const rule = ['XSP00025', 'XSP00027'];
+  const counted = ex.tickets.filter((t) => C.isCountable(t, rule));
+  const r = C.computeReport(counted, { weeks: [C.weekFromKey(202639)], slmGroups: rule, countRule: rule });
+  assert.ok(r.checks.every((c) => c.ok), JSON.stringify(r.checks.filter((c) => !c.ok)));
+  assert.deepEqual(r.gestores.filter((g) => g.techInc).map((g) => [g.gestor, g.total]), [[C.TECH_INC, 1]]);
+  assert.ok(!r.gestores.some((g) => g.techOT));
+  const p = C.computePeriod(counted, { year: 2026, month: 9, slmGroups: rule });
+  assert.ok(p.checks.every((c) => c.ok), JSON.stringify(p.checks.filter((c) => !c.ok)));
+  const row = (name) => p.gestores.find((g) => g.gestor === name);
+  assert.deepEqual([row(C.TECH_INC).inc, row(C.TECH_INC).ot], [1, 0]);
+  assert.equal(row(C.TECH_OT).inc, 0);
+});

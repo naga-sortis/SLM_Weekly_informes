@@ -303,6 +303,8 @@
         const ref = secNum.s21 ? `de la tabla ${secNum.s21}` : 'de la tabla de casos tratados';
         const notes = [`Incidencias nuevas de cada semana agrupadas por el gestor indicado en la acción actual (GESTOR - PROBLEMA - TÉCNICO); el total de cada semana coincide con “Nuevos durante la semana” ${ref}.`];
         if (report.gestorUnidentified) notes.push(`“Sin gestor identificado”: incidencias cuya acción actual no indica gestor (sin acción, devueltas o cerradas). Los casos con un técnico trabajando en la acción actual (p. ej. “JR - Trabajando”) se cuentan como OTs.`);
+        const techInc = report.gestores.find((g) => g.techInc);
+        if (techInc) notes.push(`“Incidencias (técnico trabajando)”: ${techInc.total} caso(s) con un técnico trabajando en la acción actual que, tras su revisión manual, se cuentan como incidencias.`);
         if (report.gestorInferred) notes.push(`${report.gestorInferred} incidencia(s) sin gestor en la acción actual se han asignado según el gestor citado en su descripción.`);
         if (meta.manualReviewed) notes.push(`${meta.manualReviewed} caso(s) de estas semanas se han revisado manualmente y se cuentan como incidencia u OT según esa revisión.`);
         if (meta.resolverChanged) notes.push(`${meta.resolverChanged} caso(s) de estas semanas figuraban en Oceane como resueltos por otro grupo y, tras su revisión, se cuentan como resueltos por el equipo (${(report.countRule || [qInc, qOt]).join(' / ')}).`);
@@ -466,7 +468,7 @@
         new D.TableRow({ tableHeader: true, children: ['GESTOR', 'Nº Incidencias', 'Nº OTs', 'Total'].map((h, i) =>
           cell(h, { width: GW4[i], fill: i ? ORANGE : DARK, color: 'FFFFFF', bold: true, left: i === 0 })) }),
         ...P.gestores.map((g, idx) => new D.TableRow({ children: [
-          cell(g.gestor, { width: GW4[0], left: true, fill: idx % 2 ? GREY : undefined, color: g.unidentified || g.techOT ? '606060' : undefined }),
+          cell(g.gestor, { width: GW4[0], left: true, fill: idx % 2 ? GREY : undefined, color: g.unidentified || g.techOT || g.techInc ? '606060' : undefined }),
           cell(g.inc, { width: GW4[1], fill: idx % 2 ? GREY : undefined }),
           cell(g.ot, { width: GW4[2], fill: idx % 2 ? GREY : undefined }),
           cell(g.total, { width: GW4[3], bold: true, fill: idx % 2 ? GREY : undefined }),

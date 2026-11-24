@@ -779,7 +779,7 @@
     const NO_GESTOR = 'Sin gestor identificado';
     const inferGestor = !!options.inferGestor;
     // Technician / work status in Current action → its own "OTs (técnico trabajando)" row, never "Sin gestor".
-    const gOf = (t) => t.gestor || (t.actionKind === 'trabajando' ? TECH_OT : (inferGestor ? t.gestorDesc : '')) || '';
+    const gOf = (t) => t.gestor || (t.actionKind === 'trabajando' ? techRow(t) : (inferGestor ? t.gestorDesc : '')) || '';
     let inferredCount = 0;
     const gestorMap = new Map();
     weeks.forEach((w, i) => {
@@ -795,8 +795,8 @@
       .filter((t) => t.category === 'INC' && !gOf(t) && t.created >= weeks[0].start && t.created < lastWeek.end)
       .sort((a, b) => b.created - a.created);
     const gestores = Array.from(gestorMap.entries())
-      .map(([gestor, counts]) => ({ gestor, counts, total: counts.reduce((a, b) => a + b, 0), unidentified: gestor === NO_GESTOR, techOT: gestor === TECH_OT }))
-      .sort((a, b) => (a.unidentified - b.unidentified) || (a.techOT - b.techOT) || a.gestor.localeCompare(b.gestor, 'es'));
+      .map(([gestor, counts]) => ({ gestor, counts, total: counts.reduce((a, b) => a + b, 0), unidentified: gestor === NO_GESTOR, techOT: gestor === TECH_OT, techInc: gestor === TECH_INC }))
+      .sort((a, b) => (a.unidentified - b.unidentified) || ((a.techOT || a.techInc) - (b.techOT || b.techInc)) || a.gestor.localeCompare(b.gestor, 'es'));
 
     // 2.4 Detalle de los casos sin resolver (as of the end of the report week)
     const pending = scope
@@ -962,7 +962,10 @@
     });
     add(!badG.length, '2.2 Casos por gestor: weekly totals = "Nuevos durante la semana" (Incidencias) in 2.1', `Mismatch: ${badG.join(', ')}.`);
     const unidentifiedRow = (r.gestores.find((g) => g.unidentified) || { total: 0 }).total;
-    add(!r.noGestorTickets.some((t) => t.actionKind === 'trabajando'), '2.2: no technician-status ticket is listed under “Sin gestor identificado” (they are OTs)', 'Some are still listed.');
+    add(!r.noGestorTickets.some((t) => t.actionKind === 'trabajando'), '2.2: no technician-status ticket is listed under “Sin gestor identificado” (they are OTs, or “Incidencias (técnico trabajando)” when reviewed as incidencias)', 'Some are still listed.');
+    const techOtRow = r.gestores.find((g) => g.techOT);
+    add(!techOtRow || !techOtRow.total, '2.2: the incidencias table has no “OTs (técnico trabajando)” row (a technician-status case reviewed as incidencia has its own row)',
+      `${techOtRow ? techOtRow.total : 0} case(s) in that row.`);
     add(r.noGestorTickets.length === unidentifiedRow, '2.2: the “Sin gestor identificado” ticket list has exactly the tickets counted in that row',
       `List has ${r.noGestorTickets.length}, row shows ${unidentifiedRow}.`);
     const dupNames = new Set();
@@ -1050,6 +1053,13 @@
 
   /** Row used in the gestor tables for tickets whose Current action is a technician / work status (counted as OTs). */
   const TECH_OT = 'OTs (técnico trabajando)';
+  /** Technician status in Current action, but reviewed by a person as an incidencia (e.g. a Failure of the OTs file). */
+  const TECH_INC = 'Incidencias (técnico trabajando)';
+
+  /** Gestor row of a ticket whose Current action is a technician / work status. */
+  function techRow(t) {
+    return t.category === 'INC' ? TECH_INC : TECH_OT;
+  }
 
   /** Why a ticket has no gestor — shown next to each ticket of "Sin gestor identificado". */
   const NO_GESTOR_REASONS = {
@@ -1356,7 +1366,7 @@
     const NO_GESTOR = 'Sin gestor identificado';
     const inferGestor = !!options.inferGestor;
     // Technician / work status in Current action → its own "OTs (técnico trabajando)" row, never "Sin gestor".
-    const gOf = (t) => t.gestor || (t.actionKind === 'trabajando' ? TECH_OT : (inferGestor ? t.gestorDesc : '')) || '';
+    const gOf = (t) => t.gestor || (t.actionKind === 'trabajando' ? techRow(t) : (inferGestor ? t.gestorDesc : '')) || '';
     let dataUntil = options.dataUntil ?? null;
     if (dataUntil === null) for (const t of tickets) dataUntil = Math.max(dataUntil ?? -Infinity, t.created, t.restored ?? -Infinity);
 
@@ -1443,14 +1453,14 @@
     const gm = new Map();
     for (const t of opened) {
       const g = gOf(t) || NO_GESTOR;
-      if (!gm.has(g)) gm.set(g, { gestor: g, inc: 0, ot: 0, total: 0, unidentified: g === NO_GESTOR, techOT: g === TECH_OT });
+      if (!gm.has(g)) gm.set(g, { gestor: g, inc: 0, ot: 0, total: 0, unidentified: g === NO_GESTOR, techOT: g === TECH_OT, techInc: g === TECH_INC });
       const row = gm.get(g);
       if (t.category === 'INC') row.inc++; else row.ot++;
       row.total++;
     }
     const gestores = Array.from(gm.values())
-      .sort((a, b) => (a.unidentified - b.unidentified) || (a.techOT - b.techOT) || b.total - a.total || a.gestor.localeCompare(b.gestor, 'es'));
-    const named = gestores.filter((g) => !g.unidentified && !g.techOT);
+      .sort((a, b) => (a.unidentified - b.unidentified) || ((a.techOT || a.techInc) - (b.techOT || b.techInc)) || b.total - a.total || a.gestor.localeCompare(b.gestor, 'es'));
+    const named = gestores.filter((g) => !g.unidentified && !g.techOT && !g.techInc);
     const TOP = 15;
     const top = named.slice(0, TOP);
     const rest = named.slice(TOP);
@@ -1465,6 +1475,7 @@
       othersTotal: rest.reduce((a, g) => a + g.total, 0),
       unidentifiedTotal: (gestores.find((g) => g.unidentified) || { total: 0 }).total,
       techOTTotal: (gestores.find((g) => g.techOT) || { total: 0 }).total,
+      techIncTotal: (gestores.find((g) => g.techInc) || { total: 0 }).total,
     };
 
     const noGestorTickets = opened.filter((t) => !gOf(t)).sort((a, b) => b.created - a.created);
@@ -1506,9 +1517,11 @@
     const keys = new Set(p.gestores.map((g) => gestorKey(g.gestor)));
     add(keys.size === p.gestores.length, 'Each gestor appears only once', 'Repeated gestor rows.');
     const gc = p.gestorChart.series.reduce((a, s) => a + s.data.reduce((x, y) => x + y, 0), 0);
-    const named = p.gestores.filter((g) => !g.unidentified && !g.techOT).reduce((a, g) => a + g.total, 0);
+    const named = p.gestores.filter((g) => !g.unidentified && !g.techOT && !g.techInc).reduce((a, g) => a + g.total, 0);
     const tech = p.gestores.find((g) => g.techOT);
     add(!tech || tech.inc === 0, '“OTs (técnico trabajando)” row contains only OTs', `It has ${tech ? tech.inc : 0} incidencia(s).`);
+    const techInc = p.gestores.find((g) => g.techInc);
+    add(!techInc || techInc.ot === 0, '“Incidencias (técnico trabajando)” row contains only cases reviewed as incidencias', `It has ${techInc ? techInc.ot : 0} OT(s).`);
     add(!p.noGestorTickets.some((t) => t.actionKind === 'trabajando'), 'No technician-status ticket is listed under “Sin gestor identificado”', 'Some are still listed.');
     add(gc + p.gestorChart.othersTotal === named, 'Gestor chart (top 15) + other gestores = all cases with a gestor',
       `Chart ${gc} + others ${p.gestorChart.othersTotal} vs ${named}.`);
@@ -1725,7 +1738,7 @@
     isoWeekInfo, weekFromKey, weekRange, weeksOfMonth, weeksInIsoYear, nextWeekKey,
     monthKeyOf, monthLabel, monthShort, monthsEndingAt, prevMonthKey, nextMonthKey,
     fmtDateTime, fmtDate, toExcelSerial,
-    computeReport, summarize, weeklyForCategory, validateReport, gestorKey, periodMonthsLabel, buildGestorMatcher, weekSplitText, computePeriod, validatePeriod, periodsAvailable, noGestorReason, NO_GESTOR_REASONS, TECH_OT, applyClassifications, analyzeSheets, computeTeam, validateTeam,
+    computeReport, summarize, weeklyForCategory, validateReport, gestorKey, periodMonthsLabel, buildGestorMatcher, weekSplitText, computePeriod, validatePeriod, periodsAvailable, noGestorReason, NO_GESTOR_REASONS, TECH_OT, TECH_INC, applyClassifications, analyzeSheets, computeTeam, validateTeam,
     SORTIS_GROUPS, ROLE_LABELS, RESOLVER_OTHER, SUSPECT_LABELS, REVIEW_REASONS, detectFileRole, sheetNameForRole, combineFiles, markSources,
     applyResolvers, isCountable, reviewReasons,
   };

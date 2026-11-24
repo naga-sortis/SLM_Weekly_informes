@@ -547,3 +547,10 @@ td.not-counted, p.not-counted { color: var(--err-text); font-weight: 600; }
   .act-list li { grid-template-columns: 1fr; }
   .act-note { grid-column: 1; }
 }
+
+/* Why the Word export is blocked */
+.word-block { margin-top: 10px; padding: 10px 14px; border-radius: 10px; background: var(--err-bg); border: 1px solid var(--err-border); color: var(--err-text); font-size: 13px; }
+.word-block ul { margin: 6px 0; padding-left: 18px; }
+.word-block li { margin-bottom: 6px; }
+.word-block .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.word-block p { margin: 4px 0 0; }
